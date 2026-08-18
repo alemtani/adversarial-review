@@ -50,6 +50,15 @@ assert_contains() {
     fi
 }
 
+assert_not_contains() {
+    local haystack="$1" needle="$2" label="$3"
+    if printf '%s' "$haystack" | grep -Fq "$needle"; then
+        fail "$label (unexpected '$needle')"
+    else
+        pass "$label"
+    fi
+}
+
 make_repo() {
     local dir
     dir=$(mktemp -d)
@@ -235,6 +244,104 @@ done
 assert_eq "$(triage_change "$repo")" "code deep code" "many files are deep"
 rm -f "$repo"/file_*.py
 
+# --- writer facts and reader judgment -------------------------------------
+
+assert_eq "$(parse_bool yes)" "1" "parse_bool yes"
+assert_eq "$(parse_bool false)" "0" "parse_bool false"
+assert_eq "$(parse_bool maybe)" "" "parse_bool rejects other words"
+
+parse_writer_facts_text $'decision: true\ndepth: skip\nintent: just a typo\napi_change: no\n'
+assert_eq "$FACT_DECISION" "1" "facts parse decision"
+assert_eq "$FACT_API_CHANGE" "0" "facts parse api_change no"
+assert_eq "$WRITER_FACTS_PRESENT" "1" "facts card is present"
+
+facts_repo=$(make_repo)
+CLEANUP+=("$facts_repo")
+commit_file "$facts_repo" "README.md" "hello"
+
+# Tiny README typo is editorial skip without facts.
+printf 'hella\n' > "$facts_repo/README.md"
+assert_eq "$(triage_change "$facts_repo")" "editorial skip code" "tiny README is skip before facts"
+
+mkdir -p "$facts_repo/.adversarial-review"
+cat > "$facts_repo/.adversarial-review/writer-facts.yml" << 'EOF'
+decision: true
+docs_only: true
+depth: skip
+EOF
+assert_not_contains "$(list_changed_files "$facts_repo")" "writer-facts.yml" "facts sidecar is not a changed file"
+assert_eq "$(triage_change "$facts_repo")" "decisional standard spec" "decision fact raises a typo to spec"
+# depth: skip in the card must not lower
+triage_change "$facts_repo" >/dev/null
+if [[ "$TRIAGE_DEPTH" == "skip" ]]; then
+    fail "writer facts must not set skip"
+else
+    pass "writer facts cannot set skip"
+fi
+
+# Explicit --depth skip still wins (user, not writer)
+assert_eq "$(triage_change "$facts_repo" "" skip)" "decisional skip spec" "user --depth skip still wins"
+
+# auth fact raises a small code change
+rm -f "$facts_repo/.adversarial-review/writer-facts.yml"
+git -C "$facts_repo" checkout -- README.md
+printf 'print("hi")\n' > "$facts_repo/hello.py"
+cat > "$facts_repo/.adversarial-review/writer-facts.yml" << 'EOF'
+auth: true
+docs_only: true
+EOF
+assert_eq "$(triage_change "$facts_repo")" "code deep code" "auth fact raises small code to deep"
+triage_change "$facts_repo" >/dev/null
+assert_contains "$TRIAGE_FACTS_DISPUTED" "docs_only" "docs_only is disputed when code is present"
+
+# docs_only cannot lower a sensitive path
+rm -f "$facts_repo/hello.py"
+mkdir -p "$facts_repo/src"
+printf 'def login():\n    pass\n' > "$facts_repo/src/auth.py"
+cat > "$facts_repo/.adversarial-review/writer-facts.yml" << 'EOF'
+docs_only: true
+tests_only: true
+EOF
+assert_eq "$(triage_change "$facts_repo")" "code deep code" "writer facts cannot lower auth.py"
+triage_change "$facts_repo" >/dev/null
+assert_contains "$TRIAGE_FACTS_DISPUTED" "docs_only" "docs_only disputed on auth.py"
+assert_contains "$TRIAGE_FACTS_DISPUTED" "tests_only" "tests_only disputed on auth.py"
+
+# --facts path
+alt=$(mktemp)
+CLEANUP+=("$alt")
+printf 'api_change: true\n' > "$alt"
+rm -f "$facts_repo/.adversarial-review/writer-facts.yml"
+rm -f "$facts_repo/src/auth.py"
+printf 'print("x")\n' > "$facts_repo/tiny.py"
+assert_eq "$(triage_change "$facts_repo" "" "" "$alt")" "code standard code" "--facts file raises api_change to standard"
+triage_change "$facts_repo" "" "" "$alt" >/dev/null
+card=$(format_writer_facts)
+assert_contains "$card" "api_change: yes" "facts card lists api_change"
+assert_contains "$card" "claims" "facts card says claims"
+
+# Reader judgment: counts, not a score
+if review_should_block spec '{"verdict":"ready with nits","decision_issues":0,"nit_count":2}'; then
+    fail "spec nits should not block"
+else
+    pass "spec nits do not block"
+fi
+if review_should_block spec '{"verdict":"not ready","decision_issues":2,"nit_count":1}'; then
+    pass "spec decision issues block"
+else
+    fail "spec decision issues should block"
+fi
+if review_should_block code '{"critical_count":0,"high_count":0,"medium_count":2,"low_count":4}'; then
+    fail "code medium/low should not block"
+else
+    pass "code nits do not block"
+fi
+if review_should_block code '{"critical_count":0,"high_count":1,"low_count":3}'; then
+    pass "code HIGH blocks"
+else
+    fail "code HIGH should block"
+fi
+
 # --- CLI ------------------------------------------------------------------
 
 cli="$ROOT_DIR/adversarial_review.sh"
@@ -265,6 +372,13 @@ if echo "$out" | grep -q "Unknown depth"; then
     pass "CLI rejects unknown depth"
 else
     fail "CLI unknown depth error missing: $out"
+fi
+
+out="$("$cli" --facts 2>&1 || true)"
+if echo "$out" | grep -q "requires a facts file"; then
+    pass "CLI requires --facts value"
+else
+    fail "CLI --facts value error missing: $out"
 fi
 
 # Clean tree skip does not need a reviewer CLI

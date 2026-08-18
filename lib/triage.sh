@@ -7,15 +7,22 @@
 #
 # --kind spec is an alias for decisional.
 
+_TRIAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F list_changed_files >/dev/null 2>&1; then
     # shellcheck source=diff.sh
-    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/diff.sh"
+    source "$_TRIAGE_DIR/diff.sh"
+fi
+if ! declare -F parse_writer_facts_text >/dev/null 2>&1; then
+    # shellcheck source=facts.sh
+    source "$_TRIAGE_DIR/facts.sh"
 fi
 
 TRIAGE_KIND="code"
 TRIAGE_DEPTH="skip"
 TRIAGE_MODE="code"
 TRIAGE_REASON=""
+RAISED_KIND=""
+RAISED_DEPTH=""
 
 _STAT_FILES=0
 _STAT_ADDED=0
@@ -263,6 +270,11 @@ _is_whitespace_only() {
     local untracked names
 
     untracked=$(_git "$dir" ls-files --others --exclude-standard -- .)
+    untracked=$(printf '%s\n' "$untracked" | while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        is_review_state_path "$f" && continue
+        printf '%s\n' "$f"
+    done)
     if [[ -n "$untracked" ]]; then
         return 1
     fi
@@ -331,6 +343,7 @@ _collect_change_stats() {
 
     while IFS= read -r file; do
         [[ -n "$file" ]] || continue
+        is_review_state_path "$file" && continue
         [[ -f "$dir/$file" ]] || continue
         added=$(_file_line_count "$dir/$file")
         _STAT_ADDED=$((_STAT_ADDED + added))
@@ -354,13 +367,54 @@ _emit_triage() {
     printf '%s %s %s\n' "$TRIAGE_KIND" "$TRIAGE_DEPTH" "$TRIAGE_MODE"
 }
 
+# Raise kind/depth from true writer facts. Never lower. Ignore false.
+# Args: kind depth has_code
+# Sets RAISED_KIND RAISED_DEPTH TRIAGE_FACTS_DISPUTED.
+apply_writer_fact_raises() {
+    local kind="$1"
+    local depth="$2"
+    local has_code="$3"
+    local disputed=()
+
+    RAISED_KIND="$kind"
+    RAISED_DEPTH="$depth"
+    TRIAGE_FACTS_DISPUTED=""
+
+    if [[ "$FACT_DOCS_ONLY" -eq 1 && "$has_code" -eq 1 ]]; then
+        disputed+=("docs_only")
+    fi
+    if [[ "$FACT_TESTS_ONLY" -eq 1 && "$has_code" -eq 1 ]]; then
+        disputed+=("tests_only")
+    fi
+
+    if [[ "$FACT_DECISION" -eq 1 ]]; then
+        if [[ "$has_code" -eq 0 ]]; then
+            kind="decisional"
+        fi
+        depth=$(max_depth "$depth" "standard")
+    fi
+    if [[ "$FACT_API_CHANGE" -eq 1 ]]; then
+        depth=$(max_depth "$depth" "standard")
+    fi
+    if [[ "$FACT_AUTH" -eq 1 || "$FACT_MIGRATION" -eq 1 ]]; then
+        depth=$(max_depth "$depth" "deep")
+    fi
+
+    if [[ ${#disputed[@]} -gt 0 ]]; then
+        TRIAGE_FACTS_DISPUTED=$(IFS=', '; echo "${disputed[*]}")
+    fi
+
+    RAISED_KIND="$kind"
+    RAISED_DEPTH="$depth"
+}
+
 # Classify the uncommitted change.
-# Args: target_dir [explicit_kind] [explicit_depth]
+# Args: target_dir [explicit_kind] [explicit_depth] [facts_file]
 # Prints: kind depth mode
 # Sets: TRIAGE_KIND TRIAGE_DEPTH TRIAGE_MODE TRIAGE_REASON
 triage_change() {
     local dir="$1"
-    local explicit_kind explicit_depth
+    local explicit_kind explicit_depth facts_file
     local files file
     local has_code=0 has_doc=0 has_decisional_path=0 has_sensitive=0
     local has_decision_lang=0 docs_only=1
@@ -372,6 +426,7 @@ triage_change() {
 
     explicit_kind=$(normalize_kind "${2:-}")
     explicit_depth=$(normalize_depth "${3:-}")
+    facts_file="${4:-}"
 
     TRIAGE_KIND="code"
     TRIAGE_DEPTH="skip"
@@ -538,6 +593,17 @@ triage_change() {
     if [[ -n "$fm_depth" ]]; then
         computed_depth=$(max_depth "$computed_depth" "$fm_depth")
         reasons+=("frontmatter review")
+    fi
+
+    load_writer_facts "$dir" "$facts_file"
+    if [[ "$WRITER_FACTS_PRESENT" -eq 1 ]]; then
+        apply_writer_fact_raises "$computed_kind" "$computed_depth" "$has_code"
+        computed_kind=$RAISED_KIND
+        computed_depth=$RAISED_DEPTH
+        reasons+=("writer facts")
+        if [[ -n "$TRIAGE_FACTS_DISPUTED" ]]; then
+            reasons+=("disputed $TRIAGE_FACTS_DISPUTED")
+        fi
     fi
 
     if [[ -n "$explicit_kind" ]]; then

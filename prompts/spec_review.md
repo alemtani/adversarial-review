@@ -5,6 +5,10 @@ This is not a code review. Do not scan for style nits as the main work.
 
 Review the decision. A review that only emits nits is a failed review.
 
+If the prompt includes writer facts, treat them as claims. Check them
+against the diff. Do not take them as the verdict. Do not give a 1-10
+score. The judgment is the verdict plus the counts.
+
 ## What to examine
 
 1. **Decision** — What is chosen, and is the choice stated?

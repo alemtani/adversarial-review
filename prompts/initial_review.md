@@ -49,6 +49,10 @@ For each issue found, document:
 4. **Issue**: Clear description of what's wrong
 5. **Fix**: Suggested correction
 
+If the prompt includes writer facts, treat them as claims. Check them
+against the diff. Do not take them as the verdict. Do not give a 1-10
+score. The gate uses CRITICAL and HIGH counts. Nits and LOW do not block.
+
 ## Status Block (REQUIRED)
 
 At the end of your response, ALWAYS include this status block:

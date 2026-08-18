@@ -24,6 +24,7 @@
 #   --reviewer NAME         Agent that reviews (default: Codex, then Grok)
 #   --kind NAME             editorial, operational, decisional, spec, or code
 #   --depth NAME            skip, quick, standard, or deep
+#   --facts FILE            Writer facts card
 #   --dry-run               Show what would be done without executing
 #   --list-agents           Show which agent CLIs are installed
 
@@ -84,6 +85,7 @@ REVIEWER=""
 # Optional overrides for local triage. Empty means classify from the change.
 EXPLICIT_KIND=""
 EXPLICIT_DEPTH=""
+FACTS_FILE=""
 PHASE1_PROMPT=""
 
 # Check shared dependencies. Writer/reviewer CLIs are checked in validate_roles.
@@ -282,12 +284,15 @@ run_phase_1() {
     fi
     local prompt_template
     prompt_template=$(cat "$prompt_file")
-    local depth_note
+    local depth_note facts_note
     depth_note=$(depth_guidance "$TRIAGE_DEPTH")
+    facts_note=$(format_writer_facts)
 
     local full_prompt="$prompt_template
 
 $depth_note
+
+$facts_note
 
 ---
 # DIFF AND CHANGED FILES TO REVIEW
@@ -307,17 +312,13 @@ $review_input
 
     add_to_history "$iteration" "phase_1" "$REVIEWER" "$reviewer_status"
 
-    if [[ "$TRIAGE_MODE" == "spec" ]]; then
-        case "$reviewer_verdict" in
-            ready|"ready with nits")
-                log_success "Spec verdict: $reviewer_verdict"
-                return 0
-                ;;
-            "ready with issues"|"not ready")
-                log_info "Spec verdict: $reviewer_verdict"
-                return 1
-                ;;
-        esac
+    if [[ "$TRIAGE_MODE" == "spec" && -n "$reviewer_verdict" ]]; then
+        if review_should_block spec "$reviewer_status"; then
+            log_info "Spec verdict: $reviewer_verdict"
+            return 1
+        fi
+        log_success "Spec verdict: $reviewer_verdict"
+        return 0
     fi
 
     if [[ "$reviewer_exit" == "true" ]]; then
@@ -620,6 +621,7 @@ OPTIONS:
     --reviewer NAME         Agent that reviews (default: Codex, then Grok)
     --kind NAME             editorial, operational, decisional, spec, or code
     --depth NAME            skip, quick, standard, or deep
+    --facts FILE            Writer facts card (default: .adversarial-review/writer-facts.yml)
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -638,6 +640,8 @@ TRIAGE:
     Kind:  editorial | operational | decisional | code
     Depth: skip (no review) | quick (phase 1 only) | standard | deep
     Decisional changes use the spec prompt and stay at standard or deep.
+    Writer facts are yes/no claims. They may raise depth. They may not lower it.
+    The reader returns counts, not a 1-10 score. Nits do not block.
 
 CIRCUIT BREAKER:
     Prevents runaway loops by detecting:
@@ -739,6 +743,11 @@ main() {
                 fi
                 shift 2
                 ;;
+            --facts)
+                require_flag_arg "$1" "a facts file" "${2:-}"
+                FACTS_FILE="$2"
+                shift 2
+                ;;
             --dry-run)
                 DRY_RUN=1
                 shift
@@ -778,7 +787,7 @@ main() {
         exit 1
     fi
 
-    if ! triage_change "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" >/dev/null; then
+    if ! triage_change "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" "$FACTS_FILE" >/dev/null; then
         log_error "Could not classify the change in $target_dir"
         exit 1
     fi

@@ -35,6 +35,7 @@ Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `-
 adversarial_review.sh    # 4-phase loop
 lib/agents.sh            # run_claude / run_codex / run_grok / run_agent
 lib/roles.sh             # --writer / --reviewer resolution
+lib/diff.sh              # git diff + changed files
 lib/circuit_breaker.sh
 lib/response_analyzer.sh
 lib/date_utils.sh

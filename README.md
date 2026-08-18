@@ -41,7 +41,7 @@ A reviewer that is not the writer inspects the code. The writer then answers the
 # Clone or copy to your workspace
 cd adversarial-review
 
-# Run on a target project
+# Run on a target project (reviews the uncommitted git diff)
 ./adversarial_review.sh ../my-project
 
 # Pick writer and reviewer (no self-review)
@@ -93,6 +93,7 @@ adversarial-review/
 ├── lib/
 │   ├── agents.sh            # Claude / Codex / Grok CLI adapters
 │   ├── roles.sh             # Writer / reviewer resolution
+│   ├── diff.sh              # Git diff + changed files
 │   ├── date_utils.sh        # Cross-platform date utilities
 │   ├── circuit_breaker.sh   # Prevents runaway loops
 │   └── response_analyzer.sh # Parses agent outputs
@@ -141,6 +142,8 @@ DRY_RUN=1            # Show what would happen
 ```
 
 ## How It Works
+
+Phase 1 reviews the uncommitted git diff and the changed files in the target repo. It does not dump the whole tree. The target must be a git work tree.
 
 ### Agent Status Blocks
 

@@ -72,6 +72,7 @@ log_verbose() { [[ "$VERBOSE" == "1" ]] && echo -e "${BLUE}[VERBOSE]${NC} $1" ||
 
 source "$LIB_DIR/agents.sh"
 source "$LIB_DIR/roles.sh"
+source "$LIB_DIR/diff.sh"
 
 # Roles. Resolved after flag parse. Defaults: writer=claude, reviewer=Codex then Grok.
 WRITER=""
@@ -81,6 +82,11 @@ REVIEWER=""
 check_dependencies() {
     if ! command -v jq &> /dev/null; then
         log_error "Missing dependency: jq (brew install jq)"
+        exit 1
+    fi
+
+    if ! command -v git &> /dev/null; then
+        log_error "Missing dependency: git"
         exit 1
     fi
 
@@ -239,55 +245,6 @@ parse_status_block() {
     echo "$json"
 }
 
-# Collect source code from target directory
-collect_source_code() {
-    local target_dir="$1"
-    local max_files="${2:-30}"
-    local max_lines="${3:-500}"
-    local output=""
-    local count=0
-
-    log_verbose "Collecting source code from $target_dir"
-
-    # Python files
-    count=0
-    while IFS= read -r file && [[ $count -lt $max_files ]]; do
-        [[ -z "$file" ]] && continue
-        local rel="${file#$target_dir/}"
-        output+="
-=== FILE: $rel ===
-$(head -$max_lines "$file" 2>/dev/null)
-"
-        ((count++))
-    done < <(find "$target_dir" -name "*.py" -type f ! -path "*/\.*" ! -path "*/__pycache__/*" ! -path "*/venv/*" ! -path "*/.venv/*" 2>/dev/null | sort)
-
-    # TypeScript/JavaScript
-    count=0
-    while IFS= read -r file && [[ $count -lt $max_files ]]; do
-        [[ -z "$file" ]] && continue
-        local rel="${file#$target_dir/}"
-        output+="
-=== FILE: $rel ===
-$(head -$max_lines "$file" 2>/dev/null)
-"
-        ((count++))
-    done < <(find "$target_dir" \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \) -type f ! -path "*/node_modules/*" ! -path "*/\.*" 2>/dev/null | sort)
-
-    # Shell scripts
-    count=0
-    while IFS= read -r file && [[ $count -lt 10 ]]; do
-        [[ -z "$file" ]] && continue
-        local rel="${file#$target_dir/}"
-        output+="
-=== FILE: $rel ===
-$(head -300 "$file" 2>/dev/null)
-"
-        ((count++))
-    done < <(find "$target_dir" -name "*.sh" -type f ! -path "*/\.*" 2>/dev/null | sort)
-
-    echo "$output"
-}
-
 # ============================================================================
 # PHASE 1: Independent Reviews
 # ============================================================================
@@ -297,15 +254,19 @@ run_phase_1() {
 
     log_info "=== Phase 1: Reviewer ($REVIEWER) ==="
 
-    local source_code=$(collect_source_code "$target_dir")
+    log_verbose "Collecting git diff from $target_dir"
+    local review_input
+    if ! review_input=$(collect_review_input "$target_dir"); then
+        return 1
+    fi
     local prompt_template=$(cat "$PROMPTS_DIR/initial_review.md")
 
     local full_prompt="$prompt_template
 
 ---
-# SOURCE CODE TO REVIEW
+# DIFF AND CHANGED FILES TO REVIEW
 
-$source_code
+$review_input
 "
 
     local reviewer_out
@@ -610,7 +571,7 @@ OPTIONS:
     --list-agents           Show which agent CLIs are installed
 
 PHASES:
-    1. Review               Reviewer inspects the code
+    1. Review               Reviewer inspects the uncommitted git diff
     2. Writer rebuttal      Writer answers the reviewer's findings
     3. Reviewer response    Reviewer answers the rebuttal
     4. Synthesis            Writer implements agreed fixes
@@ -623,6 +584,7 @@ CIRCUIT BREAKER:
 
 REQUIREMENTS:
     - jq: brew install jq
+    - git: the target must be a git work tree
     - Writer and reviewer CLIs must be installed (claude, codex, or grok)
     - Default writer: claude. Default reviewer: Codex, then Grok.
     - coreutils (macOS): brew install coreutils (for timeout)
@@ -728,6 +690,12 @@ main() {
     fi
 
     check_dependencies
+
+    if ! is_git_work_tree "$target_dir"; then
+        log_error "Target is not a git repository: $target_dir"
+        exit 1
+    fi
+
     resolve_roles
 
     if [[ -n "$custom_prompt" ]] && [[ -f "$custom_prompt" ]]; then

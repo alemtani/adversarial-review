@@ -25,6 +25,7 @@
 #   --kind NAME             editorial, operational, decisional, spec, or code
 #   --depth NAME            skip, quick, standard, or deep
 #   --facts FILE            Writer facts card
+#   --install-hook          Install the Stop hook into the target repo
 #   --dry-run               Show what would be done without executing
 #   --list-agents           Show which agent CLIs are installed
 
@@ -77,6 +78,8 @@ source "$LIB_DIR/agents.sh"
 source "$LIB_DIR/roles.sh"
 source "$LIB_DIR/diff.sh"
 source "$LIB_DIR/triage.sh"
+source "$LIB_DIR/status.sh"
+source "$LIB_DIR/hook.sh"
 
 # Roles. Resolved after flag parse. Defaults: writer=claude, reviewer=Codex then Grok.
 WRITER=""
@@ -87,6 +90,7 @@ EXPLICIT_KIND=""
 EXPLICIT_DEPTH=""
 FACTS_FILE=""
 PHASE1_PROMPT=""
+INSTALL_HOOK=0
 
 # Check shared dependencies. Writer/reviewer CLIs are checked in validate_roles.
 check_dependencies() {
@@ -205,59 +209,6 @@ add_to_history() {
             "timestamp": $ts
         }]
     ' "$TRACKING_FILE" > "$tmp" && mv "$tmp" "$TRACKING_FILE"
-}
-
-# Parse status block from agent output
-# Format: ---REVIEW_STATUS--- ... ---END_REVIEW_STATUS---
-parse_status_block() {
-    local file="$1"
-    local block_name="${2:-REVIEW_STATUS}"
-
-    if [[ ! -f "$file" ]]; then
-        echo '{"error": "file not found"}'
-        return 1
-    fi
-
-    # Extract the status block
-    local content=$(cat "$file")
-    local block=$(echo "$content" | sed -n "/---${block_name}---/,/---END_${block_name}---/p" | grep -v "^---")
-
-    if [[ -z "$block" ]]; then
-        # No status block found, try to detect NO_ISSUES
-        if echo "$content" | grep -qE '^\s*NO_ISSUES\s*$'; then
-            echo '{"exit_signal": true, "issues_found": 0}'
-            return 0
-        fi
-        echo '{"error": "no status block"}'
-        return 1
-    fi
-
-    # Parse key: value pairs into JSON
-    local json="{"
-    local first=true
-    while IFS=: read -r key value; do
-        [[ -z "$key" ]] && continue
-        key=$(echo "$key" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-        [[ "$first" == "true" ]] && first=false || json+=","
-
-        # Determine type
-        if [[ "$value" =~ ^[0-9]+$ ]]; then
-            json+="\"$key\": $value"
-        elif [[ "$value" == "true" || "$value" == "false" ]]; then
-            json+="\"$key\": $value"
-        elif [[ "$value" == "YES" || "$value" == "FULL" ]]; then
-            json+="\"$key\": true"
-        elif [[ "$value" == "NO" || "$value" == "LOW" ]]; then
-            json+="\"$key\": false"
-        else
-            json+="\"$key\": \"$value\""
-        fi
-    done <<< "$block"
-    json+="}"
-
-    echo "$json"
 }
 
 # ============================================================================
@@ -622,6 +573,7 @@ OPTIONS:
     --kind NAME             editorial, operational, decisional, spec, or code
     --depth NAME            skip, quick, standard, or deep
     --facts FILE            Writer facts card (default: .adversarial-review/writer-facts.yml)
+    --install-hook          Install the Stop hook into the target repo
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -643,6 +595,12 @@ TRIAGE:
     Writer facts are yes/no claims. They may raise depth. They may not lower it.
     The reader returns counts, not a 1-10 score. Nits do not block.
 
+STOP HOOK:
+    --install-hook writes a Stop hook for Claude, Grok, and Codex.
+    The hook reads writer facts, triages, calls the reader, and blocks
+    Stop on CRITICAL/HIGH or decision issues. It does not edit the tree.
+    State lives in the target at .adversarial-review/ (gitignored).
+
 CIRCUIT BREAKER:
     Prevents runaway loops by detecting:
     - No progress after 3 iterations
@@ -662,6 +620,7 @@ EXAMPLES:
     ./adversarial_review.sh --kind spec --reviewer grok ../my-project
     ./adversarial_review.sh -m 5 -v ../my-project
     ./adversarial_review.sh --dry-run ../my-project
+    ./adversarial_review.sh --install-hook ../my-project
     ./adversarial_review.sh --list-agents
     ./adversarial_review.sh --status
 
@@ -748,6 +707,10 @@ main() {
                 FACTS_FILE="$2"
                 shift 2
                 ;;
+            --install-hook)
+                INSTALL_HOOK=1
+                shift
+                ;;
             --dry-run)
                 DRY_RUN=1
                 shift
@@ -781,6 +744,11 @@ main() {
     fi
 
     check_dependencies
+
+    if [[ "$INSTALL_HOOK" -eq 1 ]]; then
+        install_stop_hook "$target_dir"
+        exit $?
+    fi
 
     if ! is_git_work_tree "$target_dir"; then
         log_error "Target is not a git repository: $target_dir"

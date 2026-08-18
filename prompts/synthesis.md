@@ -1,8 +1,7 @@
 # Adversarial Code Review - Phase 4: Synthesis & Implementation
 
-You are the final arbiter in an adversarial review process.
-Two AI agents (Claude and Codex) have reviewed code, cross-reviewed each other's findings,
-and provided meta-feedback. Your task is to synthesize their findings and implement fixes.
+You are the writer. A reviewer examined the change. You rebutted. The reviewer answered.
+Synthesize the findings and implement high-confidence fixes.
 
 ## Decision Framework
 
@@ -43,7 +42,7 @@ For each fix you implement:
 ### Fix #N: [Filename]
 **Issue**: What was wrong
 **Confidence**: HIGH | MEDIUM
-**Source**: Both agents | Claude | Codex
+**Source**: Both | writer | reviewer
 **Change**: Description of what you changed
 ```
 
@@ -115,7 +114,7 @@ SUMMARY: Both agents agreed no issues exist, code is clean
 - **Don't over-fix**: If agents disagreed, err on the side of not changing working code
 - **Test changes**: Run relevant tests after making changes
 
-If both agents reported NO_ISSUES in Phase 1, respond with:
+If the reviewer reported NO_ISSUES in Phase 1, respond with:
 NO_ISSUES
 
 And set EXIT_SIGNAL: true

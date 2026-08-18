@@ -6,7 +6,7 @@ Remaining work and locked policy: **[docs/handoff.md](docs/handoff.md)**. Start 
 
 ## What this is
 
-Multi-agent code review. Today Claude and Codex review independently, cross-review, meta-review, then Claude synthesizes. The destination is a writer + reviewer stop hook. See the handoff.
+Multi-agent code review. A reviewer inspects the change. The writer rebuts. The reviewer answers. The writer synthesizes. The destination is a writer + reviewer stop hook. See the handoff.
 
 Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 
@@ -14,27 +14,27 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 
 ```bash
 ./adversarial_review.sh ../some-project
+./adversarial_review.sh --writer claude --reviewer grok ../project
 ./adversarial_review.sh --dry-run ../project
 ./adversarial_review.sh --list-agents
 ./adversarial_review.sh --status
 ./adversarial_review.sh --reset
 ```
 
-Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes.
+Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`.
 
 ## Dependencies
 
-- **claude CLI**: `npm install -g @anthropic-ai/claude-code` (required for the current loop)
-- **codex CLI**: `npm install -g @openai/codex` (required for the current loop)
 - **jq**: `brew install jq`
 - **coreutils** (macOS): `brew install coreutils` (for `gtimeout`)
-- **grok CLI**: optional until a reviewer role selects it
+- Writer and reviewer CLIs: `claude`, `codex`, or `grok`. Default writer is Claude. Default reviewer is Codex, then Grok.
 
 ## Layout
 
 ```
 adversarial_review.sh    # 4-phase loop
 lib/agents.sh            # run_claude / run_codex / run_grok / run_agent
+lib/roles.sh             # --writer / --reviewer resolution
 lib/circuit_breaker.sh
 lib/response_analyzer.sh
 lib/date_utils.sh
@@ -42,14 +42,14 @@ prompts/                 # initial_review, cross_review, meta_review, synthesis
 docs/handoff.md          # remaining slices and locked policy
 ```
 
-The loop still calls Claude and Codex only. Do not add a third peer reviewer.
+Do not add a third peer reviewer. The writer does not review its own work.
 
 ## Architecture
 
-1. **Independent reviews** — Claude and Codex in parallel
-2. **Cross-review** — each reviews the other's findings
-3. **Meta-review** — each answers feedback
-4. **Synthesis** — Claude implements fixes (`--dangerously-skip-permissions`)
+1. **Review** — reviewer only
+2. **Writer rebuttal** — writer answers the findings
+3. **Reviewer response** — reviewer answers the rebuttal
+4. **Synthesis** — writer implements fixes
 
 Status blocks in agent output are parsed (`---REVIEW_STATUS---` …).
 
@@ -59,7 +59,7 @@ Artifacts: `iter{N}_{phase}_{agent}_{type}.md` under `artifacts/`.
 
 1. Add `run_<name>()` in `lib/agents.sh`
 2. Register it in `KNOWN_AGENTS`, `agent_cli`, and `run_agent`
-3. Do not wire it into the 4-phase loop until writer/reviewer roles exist
+3. Select it with `--writer` or `--reviewer`. The writer cannot review itself.
 
 ## Bash notes
 

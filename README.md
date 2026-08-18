@@ -1,12 +1,12 @@
 # Adversarial Review
 
-Multi-agent code review with Claude and GPT Codex in an adversarial debate loop.
+Multi-agent code review. A reviewer inspects the change. The writer rebuts. Then the writer implements agreed fixes.
 
 Based on patterns from [asimov-ralph](https://github.com/frankbria/ralph-claude-code) and research on [AI Debate](https://arxiv.org/abs/2410.04663).
 
 ## Concept
 
-Two AI agents (Claude and GPT Codex) independently review code, then critique each other's findings through multiple rounds of debate. This adversarial process helps:
+A reviewer that is not the writer inspects the code. The writer then answers the findings. This split helps:
 
 - **Find more issues**: Different models catch different problems
 - **Eliminate false positives**: Cross-validation filters out incorrect findings
@@ -17,30 +17,22 @@ Two AI agents (Claude and GPT Codex) independently review code, then critique ea
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Phase 1: Independent Reviews                               │
-│    Claude reviews code → claude_review.md                   │
-│    Codex reviews code  → codex_review.md                    │
-│    (runs in parallel)                                       │
+│  Phase 1: Review                                            │
+│    Reviewer inspects the code                               │
 ├─────────────────────────────────────────────────────────────┤
-│  Phase 2: Cross-Review                                      │
-│    Claude reviews Codex's findings → claude_on_codex.md     │
-│    Codex reviews Claude's findings → codex_on_claude.md     │
-│    (runs in parallel)                                       │
+│  Phase 2: Writer rebuttal                                   │
+│    Writer answers the reviewer's findings                   │
 ├─────────────────────────────────────────────────────────────┤
-│  Phase 3: Meta-Review                                       │
-│    Claude responds to Codex's critique → claude_meta.md     │
-│    Codex responds to Claude's critique → codex_meta.md      │
-│    (runs in parallel)                                       │
+│  Phase 3: Reviewer response                                 │
+│    Reviewer answers the rebuttal                            │
 ├─────────────────────────────────────────────────────────────┤
 │  Phase 4: Synthesis                                         │
-│    Claude reviews all debate artifacts                      │
-│    Decides which issues are valid                           │
-│    Implements fixes with high/medium confidence             │
+│    Writer implements high-confidence fixes                  │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
               Loop back to Phase 1 to verify fixes
-              until both agents report NO_ISSUES
+              until the reviewer reports NO_ISSUES
 ```
 
 ## Quick Start
@@ -51,6 +43,9 @@ cd adversarial-review
 
 # Run on a target project
 ./adversarial_review.sh ../my-project
+
+# Pick writer and reviewer (no self-review)
+./adversarial_review.sh --writer claude --reviewer grok ../my-project
 
 # With options
 ./adversarial_review.sh -m 5 -v ../my-project  # 5 iterations, verbose
@@ -64,11 +59,10 @@ cd adversarial-review
 
 ## Requirements
 
-- **claude CLI**: `npm install -g @anthropic-ai/claude-code`
-- **codex CLI**: `npm install -g @openai/codex`
 - **jq**: `brew install jq` (macOS) or `apt install jq` (Linux)
 - **coreutils** (macOS only, for timeout): `brew install coreutils`
-- **grok CLI** (optional): registered in `lib/agents.sh` but not used in the review loop yet
+- Writer and reviewer CLIs: `claude`, `codex`, or `grok`
+- Default writer: Claude. Default reviewer: Codex, then Grok. The writer cannot review itself.
 
 ## Usage
 
@@ -81,6 +75,8 @@ OPTIONS:
     -p, --prompt FILE       Custom initial review prompt
     -v, --verbose           Verbose output
     -t, --timeout MIN       Timeout per agent in minutes (default: 10)
+    --writer NAME           Agent that wrote the change (default: claude)
+    --reviewer NAME         Agent that reviews (default: Codex, then Grok)
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -96,6 +92,7 @@ adversarial-review/
 ├── adversarial_review.sh    # Main script
 ├── lib/
 │   ├── agents.sh            # Claude / Codex / Grok CLI adapters
+│   ├── roles.sh             # Writer / reviewer resolution
 │   ├── date_utils.sh        # Cross-platform date utilities
 │   ├── circuit_breaker.sh   # Prevents runaway loops
 │   └── response_analyzer.sh # Parses agent outputs
@@ -165,7 +162,7 @@ SUMMARY: Found critical type mixing bug
 ### Exit Conditions
 
 The loop exits when:
-1. **Both agents report NO_ISSUES** in Phase 1
+1. **The reviewer reports NO_ISSUES** in Phase 1
 2. **Synthesis completes** with EXIT_SIGNAL: true
 3. **Max iterations reached**
 4. **Circuit breaker opens** (stagnation detected)
@@ -173,13 +170,10 @@ The loop exits when:
 ### Artifacts
 
 Each iteration produces:
-- `iter{N}_1_claude_review.md` - Claude's initial review
-- `iter{N}_1_codex_review.md` - Codex's initial review
-- `iter{N}_2_claude_on_codex.md` - Claude's cross-review
-- `iter{N}_2_codex_on_claude.md` - Codex's cross-review
-- `iter{N}_3_claude_meta.md` - Claude's meta-review
-- `iter{N}_3_codex_meta.md` - Codex's meta-review
-- `iter{N}_4_synthesis.md` - Final synthesis and fixes
+- `iter{N}_1_{reviewer}_review.md` - Reviewer's findings
+- `iter{N}_2_{writer}_on_{reviewer}.md` - Writer rebuttal
+- `iter{N}_3_{reviewer}_meta.md` - Reviewer response
+- `iter{N}_4_synthesis.md` - Synthesis and fixes
 
 ## Research Background
 
@@ -196,13 +190,13 @@ Key findings from research:
 
 ## Cost Considerations
 
-Each iteration makes 6 API calls (3 parallel pairs):
-- Phase 1: 2 calls (Claude + Codex)
-- Phase 2: 2 calls (Claude + Codex)
-- Phase 3: 2 calls (Claude + Codex)
-- Phase 4: 1 call (Claude only)
+Each iteration makes 4 API calls:
+- Phase 1: 1 call (reviewer)
+- Phase 2: 1 call (writer)
+- Phase 3: 1 call (reviewer)
+- Phase 4: 1 call (writer)
 
-With 3 iterations max, worst case is ~21 API calls per review.
+With 3 iterations max, worst case is 12 API calls per review.
 
 ## Contributing
 

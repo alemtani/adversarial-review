@@ -143,7 +143,7 @@ DRY_RUN=1            # Show what would happen
 
 ## How It Works
 
-Phase 1 reviews the uncommitted git diff and the changed files in the target repo. It does not dump the whole tree. Files at or under 2000 lines are included in full. Larger files include the changed regions and nearby context. The target must be a git work tree.
+Phase 1 reviews the uncommitted git diff and the changed files in the target repo. It does not dump the whole tree. The whole diff is always included. Whole file bodies are included until a 10000 line budget. The target must be a git work tree.
 
 ### Agent Status Blocks
 

@@ -156,22 +156,12 @@ sub_list=$(list_changed_files "$repo/lib")
 assert_contains "$sub_list" "in.txt" "subdir lists its own change"
 assert_not_contains "$sub_list" "root-only.txt" "subdir omits sibling changes"
 
-# File-contents cap
-cap_repo=$(make_repo)
-CLEANUP+=("$cap_repo")
-commit_file "$cap_repo" "keep.txt" "keep"
-printf 'changed\n' > "$cap_repo/keep.txt"
-printf 'one\n' > "$cap_repo/extra.txt"
-capped=$(collect_review_input "$cap_repo" 1 500)
-assert_contains "$capped" "(further file contents omitted; 1 file cap)" "file-contents cap is noted"
-assert_contains "$capped" "extra.txt" "capped run still lists every changed path"
-
 write_lines() {
     local path="$1" n="$2"
     awk -v n="$n" 'BEGIN { print "HEAD_ONLY"; for (i = 2; i <= n; i++) printf "line %d\n", i }' > "$path"
 }
 
-# A 1200-line file is included in full (default threshold is 2000).
+# A 1200-line file is included in full (default budget is 10000).
 large_repo=$(make_repo)
 CLEANUP+=("$large_repo")
 write_lines "$large_repo/big.txt" 1200
@@ -184,18 +174,16 @@ assert_contains "$large_input" "EDIT_AT_1100" "1200-line file includes an edit p
 assert_contains "$large_input" "HEAD_ONLY" "1200-line file is included in full"
 assert_contains "$large_input" "=== FILE: big.txt ===" "1200-line file uses the whole-file header"
 
-# A file over the threshold keeps the late edit and drops the unused head.
-write_lines "$large_repo/huge.txt" 400
-git -C "$large_repo" add huge.txt
-git -C "$large_repo" commit -q -m "add huge"
-awk 'NR==350 { print "EDIT_AT_350"; next } { print }' "$large_repo/huge.txt" > "$large_repo/huge.txt.tmp"
-mv "$large_repo/huge.txt.tmp" "$large_repo/huge.txt"
-AR_HUNK_CONTEXT=20
-sliced=$(collect_review_input "$large_repo" 30 50)
-AR_HUNK_CONTEXT=80
-assert_contains "$sliced" "EDIT_AT_350" "large-file slice includes the late edit"
-assert_contains "$sliced" "changed regions" "large file notes that only changed regions are shown"
-assert_not_contains "$sliced" "HEAD_ONLY" "large-file slice drops the unused head of the file"
+# Line budget drops leftover file bodies and keeps the whole diff.
+write_lines "$large_repo/aaa.txt" 40
+write_lines "$large_repo/zzz.txt" 40
+budgeted=$(collect_review_input "$large_repo" 50)
+assert_contains "$budgeted" "=== FILE: aaa.txt ===" "file that fits the budget is dumped"
+assert_contains "$budgeted" "(further file contents omitted; 50 line budget)" "over-budget contents are noted"
+assert_contains "$budgeted" "  zzz.txt" "over-budget file is listed as omitted"
+assert_not_contains "$budgeted" "=== FILE: zzz.txt ===" "over-budget file body is not dumped"
+assert_contains "$budgeted" "EDIT_AT_1100" "the whole diff is kept when contents are omitted"
+assert_contains "$budgeted" "big.txt" "over-budget path stays in the changed-file list"
 
 # CLI rejects a non-git target before the loop
 cli="$ROOT_DIR/adversarial_review.sh"

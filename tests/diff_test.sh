@@ -166,6 +166,37 @@ capped=$(collect_review_input "$cap_repo" 1 500)
 assert_contains "$capped" "(further file contents omitted; 1 file cap)" "file-contents cap is noted"
 assert_contains "$capped" "extra.txt" "capped run still lists every changed path"
 
+write_lines() {
+    local path="$1" n="$2"
+    awk -v n="$n" 'BEGIN { print "HEAD_ONLY"; for (i = 2; i <= n; i++) printf "line %d\n", i }' > "$path"
+}
+
+# A 1200-line file is included in full (default threshold is 2000).
+large_repo=$(make_repo)
+CLEANUP+=("$large_repo")
+write_lines "$large_repo/big.txt" 1200
+git -C "$large_repo" add big.txt
+git -C "$large_repo" commit -q -m "add big"
+awk 'NR==1100 { print "EDIT_AT_1100"; next } { print }' "$large_repo/big.txt" > "$large_repo/big.txt.tmp"
+mv "$large_repo/big.txt.tmp" "$large_repo/big.txt"
+large_input=$(collect_review_input "$large_repo")
+assert_contains "$large_input" "EDIT_AT_1100" "1200-line file includes an edit past line 500"
+assert_contains "$large_input" "HEAD_ONLY" "1200-line file is included in full"
+assert_contains "$large_input" "=== FILE: big.txt ===" "1200-line file uses the whole-file header"
+
+# A file over the threshold keeps the late edit and drops the unused head.
+write_lines "$large_repo/huge.txt" 400
+git -C "$large_repo" add huge.txt
+git -C "$large_repo" commit -q -m "add huge"
+awk 'NR==350 { print "EDIT_AT_350"; next } { print }' "$large_repo/huge.txt" > "$large_repo/huge.txt.tmp"
+mv "$large_repo/huge.txt.tmp" "$large_repo/huge.txt"
+AR_HUNK_CONTEXT=20
+sliced=$(collect_review_input "$large_repo" 30 50)
+AR_HUNK_CONTEXT=80
+assert_contains "$sliced" "EDIT_AT_350" "large-file slice includes the late edit"
+assert_contains "$sliced" "changed regions" "large file notes that only changed regions are shown"
+assert_not_contains "$sliced" "HEAD_ONLY" "large-file slice drops the unused head of the file"
+
 # CLI rejects a non-git target before the loop
 cli="$ROOT_DIR/adversarial_review.sh"
 out="$("$cli" "$plain" 2>&1 || true)"

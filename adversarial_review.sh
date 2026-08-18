@@ -708,8 +708,11 @@ INPUT:
     Default: the uncommitted git diff of the target, plus the changed files.
     --file / --files: review the named paths instead. Directories expand to
     their files. Git is not required. File bodies stop at a 10000 line budget.
-    --files takes every path up to the next flag, so pass the target directory
-    first, or leave it out and it defaults to the current directory.
+    Relative paths resolve against the target directory first, then against
+    the directory you ran from.
+    --files takes every path up to the next flag, so a target written after it
+    is read as another path. Pass the target first, or use --file PATH per
+    path, which works in any order.
 
 EXIT CODES:
     0   clean review, or nothing to review
@@ -782,6 +785,7 @@ EOF
 main() {
     local target_dir=""
     local custom_prompt=""
+    local target_given=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -898,6 +902,7 @@ main() {
                 ;;
             *)
                 target_dir="$1"
+                target_given=1
                 shift
                 ;;
         esac
@@ -920,6 +925,7 @@ main() {
         log_error "Directory does not exist: $target_dir"
         exit $EXIT_USAGE
     fi
+    target_dir="$(cd "$target_dir" && pwd)"
 
     check_dependencies
 
@@ -934,25 +940,42 @@ main() {
     fi
 
     # Named paths do not need git. The default input is the uncommitted diff.
+    # Named paths resolve against the target first, then the current directory.
     if [[ "$USE_PATHS" -eq 1 ]]; then
-        local p
+        local p resolved_path
+        local -a resolved=()
         for p in "${REVIEW_PATHS[@]}"; do
-            if [[ ! -e "$p" ]]; then
+            if ! resolved_path=$(resolve_review_path "$target_dir" "$p"); then
                 log_error "Path does not exist: $p"
+                log_error "Tried: $(review_path_bases "$target_dir" "$p")"
+                if [[ "$target_given" -eq 0 ]]; then
+                    log_error "No target directory was given, so paths resolve against $PWD."
+                    log_error "--files takes every path up to the next flag. Pass the target"
+                    log_error "directory before --files, or use --file PATH for each path."
+                fi
                 exit $EXIT_USAGE
             fi
+            resolved+=("$resolved_path")
         done
+        REVIEW_PATHS=("${resolved[@]}")
+    else
+        if ! is_git_work_tree "$target_dir"; then
+            log_error "Target is not a git repository: $target_dir"
+            exit $EXIT_USAGE
+        fi
+    fi
+
+    # Roles come before triage. A typo'd agent or a self-review must not exit
+    # clean because depth happened to be skip.
+    resolve_roles
+
+    if [[ "$USE_PATHS" -eq 1 ]]; then
         if ! triage_paths "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" "$FACTS_FILE" \
             "${REVIEW_PATHS[@]}" >/dev/null; then
             log_error "Could not read the paths to review"
             exit $EXIT_USAGE
         fi
     else
-        if ! is_git_work_tree "$target_dir"; then
-            log_error "Target is not a git repository: $target_dir"
-            exit $EXIT_USAGE
-        fi
-
         if ! triage_change "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" "$FACTS_FILE" >/dev/null; then
             log_error "Could not classify the change in $target_dir"
             exit $EXIT_USAGE
@@ -964,12 +987,10 @@ main() {
     if [[ "$TRIAGE_DEPTH" == "skip" ]]; then
         log_success "Depth is skip — no review"
         init_tracking
-        update_tracking "target_dir" "$(cd "$target_dir" && pwd)"
+        update_tracking "target_dir" "$target_dir"
         update_tracking "status" "skipped"
         exit $EXIT_OK
     fi
-
-    resolve_roles
 
     # Fail closed before any agent starts. Without a timeout a hung agent
     # runs forever. --no-timeout is the opt-out.

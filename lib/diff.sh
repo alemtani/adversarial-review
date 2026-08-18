@@ -221,6 +221,46 @@ expand_review_paths() {
     return $rc
 }
 
+# Resolve one named path. Target-relative wins. The caller's directory is
+# the fallback. Prints the resolved path, or returns 1 when neither exists.
+# Args: target_dir path
+resolve_review_path() {
+    local target="${1%/}"
+    local path="$2"
+
+    [[ -n "$path" ]] || return 1
+    if [[ "$path" == /* ]]; then
+        [[ -e "$path" ]] || return 1
+        printf '%s' "$path"
+        return 0
+    fi
+    if [[ -n "$target" && -e "$target/$path" ]]; then
+        printf '%s' "$target/$path"
+        return 0
+    fi
+    if [[ -e "$PWD/$path" ]]; then
+        printf '%s' "$PWD/$path"
+        return 0
+    fi
+    return 1
+}
+
+# Print the bases resolve_review_path tried, for the error message.
+review_path_bases() {
+    local target="${1%/}"
+    local path="$2"
+
+    if [[ "$path" == /* ]]; then
+        printf '%s' "$path"
+        return 0
+    fi
+    if [[ -z "$target" || "$target" == "$PWD" ]]; then
+        printf '%s/%s' "$PWD" "$path"
+        return 0
+    fi
+    printf '%s/%s and %s/%s' "$target" "$path" "$PWD" "$path"
+}
+
 # Print the path shown to the reviewer. Relative to base_dir when possible.
 _display_path() {
     local base="${1%/}"

@@ -174,6 +174,37 @@ git -C "$repo" commit -q -m init
 triage_change "$repo" >/dev/null
 assert_eq "$TRIAGE_DEPTH" "skip" "a clean tree still skips"
 
+# --- resolve_review_path --------------------------------------------------
+
+# Same relative name under the target and under the caller's directory.
+base=$(mktemp -d)
+CLEANUP+=("$base")
+mkdir -p "$base/target/docs" "$base/here/docs"
+printf 'target copy\n' > "$base/target/docs/SPEC.md"
+printf 'cwd copy\n' > "$base/here/docs/SPEC.md"
+printf 'cwd only\n' > "$base/here/only-here.md"
+
+pushd "$base/here" >/dev/null
+
+got=$(resolve_review_path "$base/target" "docs/SPEC.md")
+assert_eq "$got" "$base/target/docs/SPEC.md" "target-relative wins over the caller's directory"
+
+got=$(resolve_review_path "$base/target" "only-here.md")
+assert_eq "$got" "$PWD/only-here.md" "the caller's directory is the fallback"
+
+got=$(resolve_review_path "$base/target" "$base/here/docs/SPEC.md")
+assert_eq "$got" "$base/here/docs/SPEC.md" "an absolute path is used as given"
+
+assert_fail "an unresolvable path fails" resolve_review_path "$base/target" "nowhere.md"
+assert_fail "a missing absolute path fails" resolve_review_path "$base/target" "/nope/nowhere.md"
+
+bases=$(review_path_bases "$base/target" "docs/SPEC.md")
+assert_contains "$bases" "$base/target/docs/SPEC.md" "the error names the target base"
+assert_contains "$bases" "$PWD/docs/SPEC.md" "the error names the caller base"
+assert_eq "$(review_path_bases "$PWD" "x.md")" "$PWD/x.md" "one base is named once"
+
+popd >/dev/null
+
 # --- CLI ------------------------------------------------------------------
 
 cli="$ROOT_DIR/adversarial_review.sh"
@@ -187,6 +218,34 @@ assert_contains "$out" "--file requires a path" "--file needs a value"
 
 out=$("$cli" --files "$plain/nope.py" 2>&1 || true)
 assert_contains "$out" "Path does not exist" "the CLI names a missing path"
+assert_contains "$out" "Tried:" "the CLI names the bases it tried"
+
+# A path relative to the target, from a different working directory.
+target_repo=$(mktemp -d)
+CLEANUP+=("$target_repo")
+mkdir -p "$target_repo/docs"
+printf 'we will use postgres\nalternatives: none\n' > "$target_repo/docs/SPEC.md"
+
+if agent_available claude && agent_available grok; then
+    rc=0
+    out=$(cd "$ROOT_DIR" && DRY_RUN=1 "$cli" --no-timeout --writer claude --reviewer grok \
+        "$target_repo" --files docs/SPEC.md 2>&1) || rc=$?
+    assert_eq "$rc" "0" "a target-relative path resolves"
+    assert_contains "$out" "$target_repo/docs/SPEC.md" "the path resolves under the target"
+
+    rc=0
+    out=$(cd "$ROOT_DIR" && DRY_RUN=1 "$cli" --no-timeout --writer claude --reviewer grok \
+        --file docs/SPEC.md "$target_repo" 2>&1) || rc=$?
+    assert_eq "$rc" "0" "--file resolves against the target whatever the order"
+
+    rc=0
+    out=$(cd "$ROOT_DIR" && DRY_RUN=1 "$cli" --no-timeout --writer claude --reviewer grok \
+        --files docs/GONE.md "$target_repo" 2>&1) || rc=$?
+    assert_eq "$rc" "2" "--files swallowing the target still fails loudly"
+    assert_contains "$out" "Pass the target" "the error explains the --files rule"
+else
+    pass "skip: claude and grok CLIs are not both installed"
+fi
 
 # A dry run reviews named paths in a directory that is not a git repo.
 if agent_available claude && agent_available grok; then

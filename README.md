@@ -174,6 +174,9 @@ VERBOSE=1             # Enable verbose output
 DRY_RUN=1            # Show what would happen
 ```
 
+Roles are validated before triage. A typo'd agent name or a self-review exits
+2, even when the tree is clean and the review would have been skipped.
+
 ## Exit Codes
 
 Wire these into CI.
@@ -201,9 +204,14 @@ same 10000 line budget applies, so a large directory cannot blow up the
 prompt. Triage runs on the whole files rather than on hunks. Named paths are
 never skipped by default; only `--depth skip` skips them.
 
-`--files` takes every path up to the next flag. Pass the target directory
-first (`./adversarial_review.sh ../proj --files a.py b.py`), or leave it out
-and the target defaults to the current directory.
+Relative paths resolve against the target directory first, then against the
+directory you ran from. The error names both bases when neither has the file.
+
+`--files` takes every path up to the next flag, so a target directory written
+after it is read as another path. Pass the target first
+(`./adversarial_review.sh ../proj --files a.py b.py`), or use `--file PATH`
+per path, which works in any order. With no target the paths resolve against
+the current directory.
 
 ## How It Works
 

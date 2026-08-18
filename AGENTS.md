@@ -26,6 +26,8 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 
 Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`, `--file`, `--files`, `--no-timeout`, `--apply`, `--install-hook`.
 
+Roles are validated before triage. A bad agent name or a self-review exits 2 even on a clean tree.
+
 Exit codes: 0 clean, 1 issues, 2 usage or dependency error, 3 agent failure, 4 circuit breaker open.
 
 ## Dependencies

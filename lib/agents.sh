@@ -25,6 +25,15 @@ fi
 
 KNOWN_AGENTS=(claude codex grok)
 
+is_known_agent() {
+    local name="$1"
+    local known
+    for known in "${KNOWN_AGENTS[@]}"; do
+        [[ "$known" == "$name" ]] && return 0
+    done
+    return 1
+}
+
 # Cross-platform timeout command
 get_timeout_cmd() {
     if command -v gtimeout &> /dev/null; then

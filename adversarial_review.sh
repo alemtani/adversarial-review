@@ -22,6 +22,7 @@
 #   --reset-circuit         Reset circuit breaker
 #   --circuit-status        Show circuit breaker status
 #   --dry-run               Show what would be done without executing
+#   --list-agents           Show which agent CLIs are installed
 
 set -euo pipefail
 
@@ -40,6 +41,7 @@ TRACKING_FILE="$AR_DIR/tracking.json"
 source "$LIB_DIR/date_utils.sh"
 source "$LIB_DIR/circuit_breaker.sh"
 source "$LIB_DIR/response_analyzer.sh"
+# agents.sh is sourced after log helpers are defined
 
 # Defaults
 MAX_ITERATIONS="${MAX_ITERATIONS:-3}"
@@ -54,6 +56,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
+BOLD_CYAN='\033[1;36m'
 NC='\033[0m'
 
 # Logging
@@ -63,18 +66,10 @@ log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 log_claude()  { echo -e "${MAGENTA}[CLAUDE]${NC} $1"; }
 log_codex()   { echo -e "${CYAN}[CODEX]${NC} $1"; }
+log_grok()    { echo -e "${BOLD_CYAN}[GROK]${NC} $1"; }
 log_verbose() { [[ "$VERBOSE" == "1" ]] && echo -e "${BLUE}[VERBOSE]${NC} $1" || true; }
 
-# Cross-platform timeout command
-get_timeout_cmd() {
-    if command -v gtimeout &> /dev/null; then
-        echo "gtimeout"  # macOS with coreutils
-    elif command -v timeout &> /dev/null; then
-        echo "timeout"   # Linux
-    else
-        echo ""
-    fi
-}
+source "$LIB_DIR/agents.sh"
 
 # Check dependencies
 check_dependencies() {
@@ -98,6 +93,13 @@ check_dependencies() {
             echo "  - $dep"
         done
         exit 1
+    fi
+
+    # Grok is registered but not required until a later slice selects it
+    if agent_available grok; then
+        log_verbose "Grok CLI available"
+    else
+        log_verbose "Grok CLI not found (optional)"
     fi
 
     # Check for timeout command (warn but don't fail)
@@ -262,80 +264,6 @@ $(head -300 "$file" 2>/dev/null)
     done < <(find "$target_dir" -name "*.sh" -type f ! -path "*/\.*" 2>/dev/null | sort)
 
     echo "$output"
-}
-
-# Run Claude
-run_claude() {
-    local prompt="$1"
-    local output_file="$2"
-    local working_dir="${3:-$PWD}"
-    local with_permissions="${4:-false}"
-
-    if [[ "$DRY_RUN" == "1" ]]; then
-        log_claude "[DRY RUN] Would run Claude (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Claude output" > "$output_file"
-        return 0
-    fi
-
-    log_claude "Running..."
-
-    local timeout_cmd=$(get_timeout_cmd)
-    local timeout_secs=$((TIMEOUT_MINUTES * 60))
-
-    local cmd_args=(--print)
-    [[ "$with_permissions" == "true" ]] && cmd_args+=(--dangerously-skip-permissions)
-
-    local exit_code=0
-    if [[ -n "$timeout_cmd" ]]; then
-        (cd "$working_dir" && echo "$prompt" | $timeout_cmd ${timeout_secs}s claude "${cmd_args[@]}") > "$output_file" 2>&1 || exit_code=$?
-    else
-        (cd "$working_dir" && echo "$prompt" | claude "${cmd_args[@]}") > "$output_file" 2>&1 || exit_code=$?
-    fi
-
-    if [[ $exit_code -eq 0 ]]; then
-        log_claude "Complete ($(wc -l < "$output_file" | tr -d ' ') lines)"
-    elif [[ $exit_code -eq 124 ]]; then
-        log_warning "Claude timed out after ${TIMEOUT_MINUTES}m"
-    else
-        log_warning "Claude exited with code $exit_code"
-    fi
-
-    return $exit_code
-}
-
-# Run Codex
-run_codex() {
-    local prompt="$1"
-    local output_file="$2"
-    local working_dir="${3:-$PWD}"
-
-    if [[ "$DRY_RUN" == "1" ]]; then
-        log_codex "[DRY RUN] Would run Codex (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Codex output" > "$output_file"
-        return 0
-    fi
-
-    log_codex "Running..."
-
-    local timeout_cmd=$(get_timeout_cmd)
-    local timeout_secs=$((TIMEOUT_MINUTES * 60))
-
-    local exit_code=0
-    if [[ -n "$timeout_cmd" ]]; then
-        (cd "$working_dir" && $timeout_cmd ${timeout_secs}s codex -q --full-auto --prompt "$prompt") > "$output_file" 2>&1 || exit_code=$?
-    else
-        (cd "$working_dir" && codex -q --full-auto --prompt "$prompt") > "$output_file" 2>&1 || exit_code=$?
-    fi
-
-    if [[ $exit_code -eq 0 ]]; then
-        log_codex "Complete ($(wc -l < "$output_file" | tr -d ' ') lines)"
-    elif [[ $exit_code -eq 124 ]]; then
-        log_warning "Codex timed out after ${TIMEOUT_MINUTES}m"
-    else
-        log_warning "Codex exited with code $exit_code"
-    fi
-
-    return $exit_code
 }
 
 # ============================================================================
@@ -586,6 +514,10 @@ run_review_loop() {
     log_info "Target: $target_dir"
     log_info "Max iterations: $MAX_ITERATIONS"
     log_info "Timeout: ${TIMEOUT_MINUTES}m per agent"
+    log_info "Agents:"
+    print_agent_status | while read -r line; do
+        log_info "  $line"
+    done
     echo ""
 
     log_verbose "Initializing tracking..."
@@ -718,6 +650,7 @@ OPTIONS:
     --reset-circuit         Reset circuit breaker only
     --circuit-status        Show circuit breaker status
     --dry-run               Show what would happen without executing
+    --list-agents           Show which agent CLIs are installed
 
 PHASES:
     1. Independent Review   Claude and Codex review code in parallel
@@ -736,11 +669,13 @@ REQUIREMENTS:
     - codex CLI: npm install -g @openai/codex
     - jq: brew install jq
     - coreutils (macOS): brew install coreutils (for timeout)
+    - grok CLI: optional; registered but not used in the loop yet
 
 EXAMPLES:
     ./adversarial_review.sh ../my-project
     ./adversarial_review.sh -m 5 -v ../my-project
     ./adversarial_review.sh --dry-run ../my-project
+    ./adversarial_review.sh --list-agents
     ./adversarial_review.sh --status
 
 EOF
@@ -796,6 +731,10 @@ main() {
             --dry-run)
                 DRY_RUN=1
                 shift
+                ;;
+            --list-agents)
+                print_agent_status
+                exit 0
                 ;;
             -*)
                 log_error "Unknown option: $1"

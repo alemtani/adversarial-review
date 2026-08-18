@@ -58,6 +58,9 @@ cd adversarial-review
 
 # See which agent CLIs are installed
 ./adversarial_review.sh --list-agents
+
+# Install a Stop hook in a project
+./adversarial_review.sh --install-hook ../my-project
 ```
 
 ## Requirements
@@ -83,6 +86,7 @@ OPTIONS:
     --kind NAME             editorial, operational, decisional, spec, or code
     --depth NAME            skip, quick, standard, or deep
     --facts FILE            Writer facts card (yes/no claims)
+    --install-hook          Install the Stop hook into the target repo
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -102,9 +106,13 @@ adversarial-review/
 │   ├── diff.sh              # Git diff + changed files
 │   ├── triage.sh            # Kind and depth classification
 │   ├── facts.sh             # Writer facts and reader block counts
+│   ├── hook.sh              # Stop-hook runtime and installer
+│   ├── status.sh            # REVIEW_STATUS parser
 │   ├── date_utils.sh        # Cross-platform date utilities
 │   ├── circuit_breaker.sh   # Prevents runaway loops
 │   └── response_analyzer.sh # Parses agent outputs
+├── hooks/
+│   └── stop.sh              # Stop hook for Claude, Grok, and Codex
 ├── prompts/
 │   ├── initial_review.md    # Phase 1: Code review prompt
 │   ├── spec_review.md       # Phase 1: Spec / ADR / RFC prompt
@@ -157,6 +165,10 @@ Phase 1 reviews the uncommitted git diff and the changed files in the target rep
 The change is classified locally (no model call) as editorial, operational, decisional, or code, and as skip, quick, standard, or deep. Specs use `prompts/spec_review.md` and verdict language `ready` / `ready with nits` / `ready with issues` / `not ready`. Depth `skip` does not review. Depth `quick` runs Phase 1 only.
 
 The writer may leave a yes/no card at `.adversarial-review/writer-facts.yml`. Those facts can raise depth. They cannot lower it. The reader returns counts, not a 1-10 score. Nits do not block.
+
+### Stop hook
+
+`--install-hook` writes a Stop hook for Claude, Grok, and Codex. The hook reviews this turn's diff and blocks Stop on CRITICAL/HIGH (code) or decision issues (specs). It does not edit the tree. State lives in the target at `.adversarial-review/` and is gitignored.
 
 ### Agent Status Blocks
 

@@ -403,12 +403,6 @@ else
     fail "CLI --depth skip failed (rc=$rc): $out"
 fi
 
-if grep -q "hooks/stop.sh" "$cli"; then
-    fail "stop hook was added in this slice"
-else
-    pass "stop hook is not in the main script"
-fi
-
 if [[ ! -f "$ROOT_DIR/prompts/spec_review.md" ]]; then
     fail "spec prompt is missing"
 else

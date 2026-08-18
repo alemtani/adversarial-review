@@ -16,12 +16,13 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 ./adversarial_review.sh ../some-project
 ./adversarial_review.sh --writer claude --reviewer grok ../project
 ./adversarial_review.sh --dry-run ../project
+./adversarial_review.sh --install-hook ../project
 ./adversarial_review.sh --list-agents
 ./adversarial_review.sh --status
 ./adversarial_review.sh --reset
 ```
 
-Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`.
+Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`, `--install-hook`.
 
 ## Dependencies
 
@@ -38,10 +39,13 @@ lib/roles.sh             # --writer / --reviewer resolution
 lib/diff.sh              # git diff + changed files
 lib/triage.sh            # skip/quick/standard/deep; editorial/operational/decisional
 lib/facts.sh             # writer facts (raise-only) and reader block counts
+lib/hook.sh              # Stop-hook runtime and installer
+lib/status.sh            # REVIEW_STATUS parser
 lib/circuit_breaker.sh
 lib/response_analyzer.sh
 lib/date_utils.sh
 prompts/                 # initial_review, spec_review, cross_review, meta_review, synthesis
+hooks/stop.sh            # Stop hook for Claude, Grok, and Codex
 docs/handoff.md          # remaining slices and locked policy
 ```
 

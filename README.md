@@ -47,6 +47,9 @@ cd adversarial-review
 # Pick writer and reviewer (no self-review)
 ./adversarial_review.sh --writer claude --reviewer grok ../my-project
 
+# Force a spec review
+./adversarial_review.sh --kind spec --reviewer grok ../my-project
+
 # With options
 ./adversarial_review.sh -m 5 -v ../my-project  # 5 iterations, verbose
 
@@ -77,6 +80,9 @@ OPTIONS:
     -t, --timeout MIN       Timeout per agent in minutes (default: 10)
     --writer NAME           Agent that wrote the change (default: claude)
     --reviewer NAME         Agent that reviews (default: Codex, then Grok)
+    --kind NAME             editorial, operational, decisional, spec, or code
+    --depth NAME            skip, quick, standard, or deep
+    --facts FILE            Writer facts card (yes/no claims)
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -94,11 +100,14 @@ adversarial-review/
 │   ├── agents.sh            # Claude / Codex / Grok CLI adapters
 │   ├── roles.sh             # Writer / reviewer resolution
 │   ├── diff.sh              # Git diff + changed files
+│   ├── triage.sh            # Kind and depth classification
+│   ├── facts.sh             # Writer facts and reader block counts
 │   ├── date_utils.sh        # Cross-platform date utilities
 │   ├── circuit_breaker.sh   # Prevents runaway loops
 │   └── response_analyzer.sh # Parses agent outputs
 ├── prompts/
-│   ├── initial_review.md    # Phase 1: Independent review prompt
+│   ├── initial_review.md    # Phase 1: Code review prompt
+│   ├── spec_review.md       # Phase 1: Spec / ADR / RFC prompt
 │   ├── cross_review.md      # Phase 2: Cross-review prompt
 │   ├── meta_review.md       # Phase 3: Meta-review prompt
 │   └── synthesis.md         # Phase 4: Synthesis prompt
@@ -144,6 +153,10 @@ DRY_RUN=1            # Show what would happen
 ## How It Works
 
 Phase 1 reviews the uncommitted git diff and the changed files in the target repo. It does not dump the whole tree. The whole diff is always included. Whole file bodies are included until a 10000 line budget. The target must be a git work tree.
+
+The change is classified locally (no model call) as editorial, operational, decisional, or code, and as skip, quick, standard, or deep. Specs use `prompts/spec_review.md` and verdict language `ready` / `ready with nits` / `ready with issues` / `not ready`. Depth `skip` does not review. Depth `quick` runs Phase 1 only.
+
+The writer may leave a yes/no card at `.adversarial-review/writer-facts.yml`. Those facts can raise depth. They cannot lower it. The reader returns counts, not a 1-10 score. Nits do not block.
 
 ### Agent Status Blocks
 

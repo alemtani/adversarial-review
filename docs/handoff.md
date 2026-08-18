@@ -17,10 +17,11 @@ The loop now has writer and reviewer roles. Input is the uncommitted git diff an
 
 - Slice 1 is on `main`: `lib/agents.sh` (`run_claude`, `run_codex`, `run_grok`, `run_agent`)
 - Slice 2 is on `main`: `--writer` / `--reviewer`. Phase 1 is reviewer-only. Writer rebuts in Phase 2.
-- Slice 3: diff-scoped input. Phase 1 gets the git diff and changed files, not a tree dump.
+- Slice 3 is on `main`: diff-scoped input. Phase 1 gets the git diff and changed files, not a tree dump.
+- Slice 4: depth triage + spec prompt. Writer facts raise only. Reader returns counts, not a score.
 - Default writer: Claude. Default reviewer: Codex, then Grok. No self-review.
 
-Next: slice 4, branched from `main` after this merges.
+Next: slice 5, branched from `main` after this merges.
 
 ## Locked policy
 
@@ -45,6 +46,27 @@ Do not use line count alone. Specs are not automatically quick.
 
 Triage locally (paths, diff hunks, decision language). Do not spend a model call to classify.
 
+**Writer facts.** The writer may pass a yes/no card. Those are claims, not the review. True facts may **raise** kind or depth. They may not lower it. They may not set `skip` or send a paragraph of intent. Unknown keys are ignored.
+
+```yaml
+# .adversarial-review/writer-facts.yml in the target
+api_change: false
+auth: false
+migration: false
+decision: true
+docs_only: true
+tests_only: false
+```
+
+If a claim disagrees with the diff (`docs_only: true` plus `src/auth.py`), mark it disputed and keep the local floor.
+
+**Reader judgment.** The reader returns an ordinal plus counts, not a 1–10 score.
+
+- Spec: `ready` / `ready with nits` / `ready with issues` / `not ready`, plus `DECISION_ISSUES` and `NIT_COUNT`
+- Code: `CRITICAL_COUNT` / `HIGH_COUNT` / `MEDIUM_COUNT` / `LOW_COUNT`
+
+**Block Stop** only on CRITICAL/HIGH (code) or decision issues (specs). Nits do not block. The hook (slice 5) reads the sidecar, runs this triage, calls the reader, and tests those counts.
+
 Detect decisional docs from:
 
 - Paths: `docs/adr/`, `docs/design/`, `docs/rfcs/`, `ARCHITECTURE.md`, `DESIGN.md`, `*.spec.md`
@@ -53,17 +75,15 @@ Detect decisional docs from:
 
 Code defaults: skip (no code change) → quick (small, no sensitive paths) → standard → deep (risk paths, large diff, or user asked).
 
-**Block Stop** only on CRITICAL/HIGH (code) or decision issues (specs). Nits do not block.
-
 Spec reviews use a spec prompt, not the code-review prompt. Status language: `ready` / `ready with nits` / `ready with issues` / `not ready`. A spec review that only emits nits is a failed review.
 
 ## Slices (one PR each)
 
 1. **Agent registry + Grok runner** — on `main`
 2. **`--writer` / `--reviewer`** — on `main`. Phase 1 is reviewer-only. Writer rebuts in Phase 2. Default reviewer: Codex, then Grok.
-3. **Diff-scoped input** — this PR. Replace `collect_source_code` with the git diff + changed files
-4. **Depth triage + spec prompt** — skip/quick/standard/deep and editorial/operational/decisional
-5. **Stop-hook installer** — thin `hooks/stop.sh` for Claude, Grok, and Codex; state in the **target** repo (gitignored)
+3. **Diff-scoped input** — on `main`. Replace `collect_source_code` with the git diff + changed files
+4. **Depth triage + spec prompt** — this PR. skip/quick/standard/deep, writer facts (raise-only), reader counts
+5. **Stop-hook installer** — thin `hooks/stop.sh` for Claude, Grok, and Codex; state in the **target** repo (gitignored). Read the facts sidecar, run triage, call the reader, block on the counts.
 6. **Standalone vs hook** — hook never applies; standalone `--apply` is explicit
 
 ## Citation rule
@@ -77,8 +97,9 @@ When you do cite: one claim, one reason, one link. No research appendix.
 ## Next session
 
 ```
-Read AGENTS.md and docs/handoff.md. Implement slice 4 only: depth triage + spec prompt.
-Skip/quick/standard/deep and editorial/operational/decisional.
-Do not add the stop hook.
+Read AGENTS.md and docs/handoff.md. Implement slice 5 only: the stop-hook installer.
+Thin hooks/stop.sh for Claude, Grok, and Codex. State in the target repo (gitignored).
+Read writer facts, run local triage, call the reader, block Stop on decision issues or CRITICAL/HIGH.
+Do not implement standalone --apply.
 Open one PR. Keep the description short.
 ```

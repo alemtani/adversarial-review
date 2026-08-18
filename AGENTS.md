@@ -21,7 +21,7 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 ./adversarial_review.sh --reset
 ```
 
-Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`.
+Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`.
 
 ## Dependencies
 
@@ -36,10 +36,12 @@ adversarial_review.sh    # 4-phase loop
 lib/agents.sh            # run_claude / run_codex / run_grok / run_agent
 lib/roles.sh             # --writer / --reviewer resolution
 lib/diff.sh              # git diff + changed files
+lib/triage.sh            # skip/quick/standard/deep; editorial/operational/decisional
+lib/facts.sh             # writer facts (raise-only) and reader block counts
 lib/circuit_breaker.sh
 lib/response_analyzer.sh
 lib/date_utils.sh
-prompts/                 # initial_review, cross_review, meta_review, synthesis
+prompts/                 # initial_review, spec_review, cross_review, meta_review, synthesis
 docs/handoff.md          # remaining slices and locked policy
 ```
 

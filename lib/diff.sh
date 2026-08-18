@@ -39,6 +39,14 @@ is_git_work_tree() {
     git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
+# Tool state in the target, not part of the change under review.
+is_review_state_path() {
+    case "${1:-}" in
+        .adversarial-review|/*/.adversarial-review/*|.adversarial-review/*) return 0 ;;
+    esac
+    return 1
+}
+
 # Print changed paths relative to dir, one per line.
 # Tracked changes vs HEAD (staged and unstaged) plus untracked files.
 # Scoped to dir when dir is a subdirectory of the repo.
@@ -49,7 +57,11 @@ list_changed_files() {
             _git "$dir" diff --name-only --relative HEAD -- .
         fi
         _git "$dir" ls-files --others --exclude-standard -- .
-    } | sed '/^$/d' | sort -u
+    } | sed '/^$/d' | while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        is_review_state_path "$f" && continue
+        printf '%s\n' "$f"
+    done | sort -u
 }
 
 # Print the unified diff for tracked changes vs HEAD, then untracked files.
@@ -63,6 +75,7 @@ collect_git_diff() {
 
     while IFS= read -r file; do
         [[ -z "$file" ]] && continue
+        is_review_state_path "$file" && continue
         rc=0
         _git "$dir" diff --no-color --no-index -- /dev/null "$file" || rc=$?
         if [[ $rc -ne 0 && $rc -ne 1 ]]; then

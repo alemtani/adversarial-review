@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 # Parse agent status blocks.
 # Format: ---REVIEW_STATUS--- ... ---END_REVIEW_STATUS---
+#
+# An agent that writes nothing, stops mid-block, or omits the block failed.
+# That is not a clean review. Every such case returns an "error" field and
+# a non-zero status. Callers must treat it as a failure, not as 0 issues.
+
+# True when the file holds something an agent actually wrote.
+agent_output_ok() {
+    local file="${1:-}"
+    [[ -f "$file" ]] || return 1
+    [[ -n "$(tr -d '[:space:]' < "$file")" ]]
+}
+
+# True when a parsed status JSON reports a failure instead of a review.
+status_failed() {
+    printf '%s' "${1:-}" | jq -e 'has("error")' >/dev/null 2>&1
+}
+
+# Print the failure text from a parsed status JSON. Empty when it parsed.
+status_error() {
+    printf '%s' "${1:-}" | jq -r '.error // empty' 2>/dev/null || true
+}
 
 parse_status_block() {
     local file="$1"
@@ -11,8 +32,20 @@ parse_status_block() {
         return 1
     fi
 
+    if ! agent_output_ok "$file"; then
+        echo '{"error": "empty agent output"}'
+        return 1
+    fi
+
     local content block
     content=$(cat "$file")
+
+    if grep -Fq -- "---${block_name}---" "$file" \
+        && ! grep -Fq -- "---END_${block_name}---" "$file"; then
+        echo '{"error": "truncated status block"}'
+        return 1
+    fi
+
     block=$(echo "$content" | sed -n "/---${block_name}---/,/---END_${block_name}---/p" | grep -v "^---")
 
     if [[ -z "$block" ]]; then

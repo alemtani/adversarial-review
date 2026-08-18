@@ -92,29 +92,34 @@ _file_line_count() {
 # body line count (0 when the file is not dumped).
 _EMITTED_LINES=0
 
-_emit_file_contents() {
-    local dir="$1"
-    local file="$2"
-    local path="$dir/$file"
+_emit_one_file() {
+    local path="$1"
+    local label="$2"
 
     _EMITTED_LINES=0
     echo
     if [[ ! -e "$path" ]]; then
-        echo "=== FILE: $file (deleted) ==="
+        echo "=== FILE: $label (deleted) ==="
         return 0
     fi
     if [[ -d "$path" ]]; then
-        echo "=== FILE: $file (directory, skipped) ==="
+        echo "=== FILE: $label (directory, skipped) ==="
         return 0
     fi
     if _is_binary_file "$path"; then
-        echo "=== FILE: $file (binary, skipped) ==="
+        echo "=== FILE: $label (binary, skipped) ==="
         return 0
     fi
-    echo "=== FILE: $file ==="
+    echo "=== FILE: $label ==="
     cat "$path" 2>/dev/null || true
     _EMITTED_LINES=$(_file_line_count "$path")
     [[ -n "$_EMITTED_LINES" ]] || _EMITTED_LINES=0
+}
+
+_emit_file_contents() {
+    local dir="$1"
+    local file="$2"
+    _emit_one_file "$dir/$file" "$file"
 }
 
 # Print the review payload: changed file list, unified diff, file contents.
@@ -171,6 +176,110 @@ collect_review_input() {
         fi
 
         _emit_file_contents "$target_dir" "$file"
+        used=$((used + _EMITTED_LINES))
+    done <<< "$files"
+
+    if [[ ${#omitted[@]} -gt 0 ]]; then
+        echo
+        echo "(further file contents omitted; ${max_lines} line budget)"
+        local skip
+        for skip in "${omitted[@]}"; do
+            echo "  $skip"
+        done
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Explicit paths (--files / --file)
+#
+# Review named files and directories instead of the git diff. Works in any
+# directory, git or not, dirty or clean. The same line budget applies.
+# ---------------------------------------------------------------------------
+
+# Print one file per line for each named path. Directories expand to their
+# files. Skips .git and tool state. Duplicates are dropped, order is kept.
+# Returns 1 when a path does not exist.
+expand_review_paths() {
+    local p rc=0 raw=""
+    for p in "$@"; do
+        [[ -n "$p" ]] || continue
+        p="${p%/}"
+        [[ -n "$p" ]] || p="/"
+        if [[ -d "$p" ]]; then
+            raw+="$(find "$p" -type f \
+                ! -path '*/.git/*' \
+                ! -path '*/.adversarial-review/*' \
+                -print | sort)"$'\n'
+        elif [[ -e "$p" ]]; then
+            raw+="$p"$'\n'
+        else
+            log_error "Path does not exist: $p"
+            rc=1
+        fi
+    done
+    printf '%s' "$raw" | awk 'NF && !seen[$0]++'
+    return $rc
+}
+
+# Print the path shown to the reviewer. Relative to base_dir when possible.
+_display_path() {
+    local base="${1%/}"
+    local path="$2"
+    if [[ -n "$base" && "$path" == "$base/"* ]]; then
+        printf '%s' "${path#"$base"/}"
+    else
+        printf '%s' "$path"
+    fi
+}
+
+# Print the review payload for explicit paths: file list, then contents.
+# Args: base_dir path... ; budget comes from AR_CONTENT_LINES.
+# File bodies stop at the line budget. Returns 1 if a path is missing.
+collect_paths_input() {
+    local base_dir="$1"
+    shift
+    local max_lines="${AR_CONTENT_LINES}"
+    local files file label used=0 omitting=0
+    local -a omitted=()
+
+    files=$(expand_review_paths "$@") || return 1
+
+    echo "# REVIEW PATHS"
+    if [[ -z "$files" ]]; then
+        echo "(none)"
+        echo
+        echo "# FILE CONTENTS"
+        echo "(none)"
+        return 0
+    fi
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        printf '%s\n' "$(_display_path "$base_dir" "$file")"
+    done <<< "$files"
+
+    echo
+    echo "# FILE CONTENTS"
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        label=$(_display_path "$base_dir" "$file")
+        if [[ "$omitting" -eq 1 ]]; then
+            omitted+=("$label")
+            continue
+        fi
+
+        local nlines=0
+        if [[ -f "$file" && ! -d "$file" ]] && ! _is_binary_file "$file"; then
+            nlines=$(_file_line_count "$file")
+            [[ -n "$nlines" ]] || nlines=0
+            if [[ $((used + nlines)) -gt "$max_lines" ]]; then
+                omitting=1
+                omitted+=("$label")
+                continue
+            fi
+        fi
+
+        _emit_one_file "$file" "$label"
         used=$((used + _EMITTED_LINES))
     done <<< "$files"
 

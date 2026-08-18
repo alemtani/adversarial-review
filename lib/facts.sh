@@ -142,15 +142,16 @@ status_count() {
 }
 
 # True when the hook should block. Nits do not block.
+# A failed review blocks: no output is not a clean review.
 # Args: mode (spec|code) status_json
 review_should_block() {
     local mode="$1"
     local status="${2:-}"
     local n verdict
 
-    [[ -n "$status" ]] || return 1
-    if printf '%s' "$status" | jq -e '.error' >/dev/null 2>&1; then
-        return 1
+    [[ -n "$status" ]] || return 0
+    if printf '%s' "$status" | jq -e 'has("error")' >/dev/null 2>&1; then
+        return 0
     fi
 
     if [[ "$mode" == "spec" ]]; then

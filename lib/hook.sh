@@ -256,6 +256,19 @@ hook_block_reason() {
     body="Adversarial review blocked Stop ($mode).
 Kind: $kind  Depth: $depth  Reviewer: $reviewer"
 
+    if status_failed "$status"; then
+        body+="
+REVIEW FAILED: $(status_error "$status"). The reviewer ($reviewer) produced
+no usable review. This is not a clean review. Run the reviewer again."
+        if [[ -f "$review_file" ]]; then
+            body+="
+
+$(head -n 40 "$review_file")"
+        fi
+        printf '%s' "$body"
+        return 0
+    fi
+
     if [[ "$mode" == "spec" ]]; then
         body+="
 Verdict: $(printf '%s' "$status" | jq -r '.verdict // empty')
@@ -336,12 +349,16 @@ run_stop_hook() {
 
     review_file="$state/review.md"
     status_file="$state/status.json"
-    if ! hook_run_reader "$target" "$reviewer" "$review_file"; then
-        return 0
-    fi
+    # A reader that fails still gets parsed. An empty or truncated review
+    # is a failure state, and review_should_block blocks on it.
+    hook_run_reader "$target" "$reviewer" "$review_file" || true
 
-    status=$(parse_status_block "$review_file" "REVIEW_STATUS") || status='{"error":"no status block"}'
+    status=$(parse_status_block "$review_file" "REVIEW_STATUS") || true
+    [[ -n "$status" ]] || status='{"error": "no status block"}'
     printf '%s\n' "$status" > "$status_file"
+    if status_failed "$status"; then
+        log_error "Review failed: $(status_error "$status") ($reviewer)"
+    fi
 
     if ! review_should_block "$TRIAGE_MODE" "$status"; then
         hook_clear_hash "$target"

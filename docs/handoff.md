@@ -17,10 +17,11 @@ The loop now has writer and reviewer roles. Input is the uncommitted git diff an
 
 - Slice 1 is on `main`: `lib/agents.sh` (`run_claude`, `run_codex`, `run_grok`, `run_agent`)
 - Slice 2 is on `main`: `--writer` / `--reviewer`. Phase 1 is reviewer-only. Writer rebuts in Phase 2.
-- Slice 3: diff-scoped input. Phase 1 gets the git diff and changed files, not a tree dump.
+- Slice 3 is on `main`: diff-scoped input. Phase 1 gets the git diff and changed files, not a tree dump.
+- Slice 4: depth triage + spec prompt. skip/quick/standard/deep and editorial/operational/decisional.
 - Default writer: Claude. Default reviewer: Codex, then Grok. No self-review.
 
-Next: slice 4, branched from `main` after this merges.
+Next: slice 5, branched from `main` after this merges.
 
 ## Locked policy
 
@@ -61,8 +62,8 @@ Spec reviews use a spec prompt, not the code-review prompt. Status language: `re
 
 1. **Agent registry + Grok runner** — on `main`
 2. **`--writer` / `--reviewer`** — on `main`. Phase 1 is reviewer-only. Writer rebuts in Phase 2. Default reviewer: Codex, then Grok.
-3. **Diff-scoped input** — this PR. Replace `collect_source_code` with the git diff + changed files
-4. **Depth triage + spec prompt** — skip/quick/standard/deep and editorial/operational/decisional
+3. **Diff-scoped input** — on `main`. Replace `collect_source_code` with the git diff + changed files
+4. **Depth triage + spec prompt** — this PR. skip/quick/standard/deep and editorial/operational/decisional
 5. **Stop-hook installer** — thin `hooks/stop.sh` for Claude, Grok, and Codex; state in the **target** repo (gitignored)
 6. **Standalone vs hook** — hook never applies; standalone `--apply` is explicit
 
@@ -77,8 +78,8 @@ When you do cite: one claim, one reason, one link. No research appendix.
 ## Next session
 
 ```
-Read AGENTS.md and docs/handoff.md. Implement slice 4 only: depth triage + spec prompt.
-Skip/quick/standard/deep and editorial/operational/decisional.
-Do not add the stop hook.
+Read AGENTS.md and docs/handoff.md. Implement slice 5 only: the stop-hook installer.
+Thin hooks/stop.sh for Claude, Grok, and Codex. State in the target repo (gitignored).
+Do not implement standalone --apply.
 Open one PR. Keep the description short.
 ```

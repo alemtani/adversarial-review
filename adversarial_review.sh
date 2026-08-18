@@ -22,6 +22,8 @@
 #   --circuit-status        Show circuit breaker status
 #   --writer NAME           Agent that wrote the change (default: claude)
 #   --reviewer NAME         Agent that reviews (default: Codex, then Grok)
+#   --kind NAME             editorial, operational, decisional, spec, or code
+#   --depth NAME            skip, quick, standard, or deep
 #   --dry-run               Show what would be done without executing
 #   --list-agents           Show which agent CLIs are installed
 
@@ -73,10 +75,16 @@ log_verbose() { [[ "$VERBOSE" == "1" ]] && echo -e "${BLUE}[VERBOSE]${NC} $1" ||
 source "$LIB_DIR/agents.sh"
 source "$LIB_DIR/roles.sh"
 source "$LIB_DIR/diff.sh"
+source "$LIB_DIR/triage.sh"
 
 # Roles. Resolved after flag parse. Defaults: writer=claude, reviewer=Codex then Grok.
 WRITER=""
 REVIEWER=""
+
+# Optional overrides for local triage. Empty means classify from the change.
+EXPLICIT_KIND=""
+EXPLICIT_DEPTH=""
+PHASE1_PROMPT=""
 
 # Check shared dependencies. Writer/reviewer CLIs are checked in validate_roles.
 check_dependencies() {
@@ -95,13 +103,18 @@ check_dependencies() {
     fi
 }
 
-require_agent_arg() {
+require_flag_arg() {
     local opt="$1"
-    local val="${2:-}"
+    local what="$2"
+    local val="${3:-}"
     if [[ -z "$val" || "$val" == -* ]]; then
-        log_error "$opt requires an agent name"
+        log_error "$opt requires $what"
         exit 1
     fi
+}
+
+require_agent_arg() {
+    require_flag_arg "$1" "an agent name" "${2:-}"
 }
 
 resolve_roles() {
@@ -259,9 +272,22 @@ run_phase_1() {
     if ! review_input=$(collect_review_input "$target_dir"); then
         return 1
     fi
-    local prompt_template=$(cat "$PROMPTS_DIR/initial_review.md")
+
+    local prompt_file="$PROMPTS_DIR/initial_review.md"
+    if [[ -n "$PHASE1_PROMPT" ]]; then
+        prompt_file="$PHASE1_PROMPT"
+    elif [[ "$TRIAGE_MODE" == "spec" ]]; then
+        prompt_file="$PROMPTS_DIR/spec_review.md"
+        log_info "Using spec review prompt"
+    fi
+    local prompt_template
+    prompt_template=$(cat "$prompt_file")
+    local depth_note
+    depth_note=$(depth_guidance "$TRIAGE_DEPTH")
 
     local full_prompt="$prompt_template
+
+$depth_note
 
 ---
 # DIFF AND CHANGED FILES TO REVIEW
@@ -274,11 +300,25 @@ $review_input
 
     run_agent "$REVIEWER" "$full_prompt" "$reviewer_out" "$target_dir" "review"
 
-    local reviewer_status reviewer_exit reviewer_issues
+    local reviewer_status reviewer_exit reviewer_issues reviewer_verdict
     reviewer_status=$(parse_status_block "$reviewer_out" "REVIEW_STATUS")
     reviewer_exit=$(echo "$reviewer_status" | jq -r '.exit_signal // false')
+    reviewer_verdict=$(echo "$reviewer_status" | jq -r '.verdict // empty' | tr '[:upper:]' '[:lower:]')
 
     add_to_history "$iteration" "phase_1" "$REVIEWER" "$reviewer_status"
+
+    if [[ "$TRIAGE_MODE" == "spec" ]]; then
+        case "$reviewer_verdict" in
+            ready|"ready with nits")
+                log_success "Spec verdict: $reviewer_verdict"
+                return 0
+                ;;
+            "ready with issues"|"not ready")
+                log_info "Spec verdict: $reviewer_verdict"
+                return 1
+                ;;
+        esac
+    fi
 
     if [[ "$reviewer_exit" == "true" ]]; then
         log_success "Reviewer reports NO_ISSUES"
@@ -304,9 +344,15 @@ run_phase_2() {
     reviewer_review="$(phase1_review_file "$iteration")"
     cross_prompt=$(cat "$PROMPTS_DIR/cross_review.md")
 
+    local spec_note=""
+    if [[ "$TRIAGE_MODE" == "spec" ]]; then
+        spec_note="This was a spec review. Verdict language is ready / ready with nits / ready with issues / not ready. Nits do not block."
+    fi
+
     local writer_prompt="$cross_prompt
 
 You are the writer ($WRITER). Rebut the reviewer's ($REVIEWER) findings.
+$spec_note
 
 ---
 # THE REVIEWER'S FINDINGS TO ANALYZE
@@ -428,6 +474,9 @@ run_review_loop() {
     log_info "Target: $target_dir"
     log_info "Writer: $WRITER"
     log_info "Reviewer: $REVIEWER"
+    log_info "Kind: $TRIAGE_KIND"
+    log_info "Depth: $TRIAGE_DEPTH"
+    log_verbose "Triage reason: $TRIAGE_REASON"
     log_info "Max iterations: $MAX_ITERATIONS"
     log_info "Timeout: ${TIMEOUT_MINUTES}m per agent"
     log_info "Agents:"
@@ -470,11 +519,17 @@ run_review_loop() {
 
         # Phase 1
         if run_phase_1 "$target_dir" "$iteration"; then
-            log_success "Review complete - reviewer reports clean code"
+            log_success "Review complete"
             update_tracking "status" "clean"
             return 0
         fi
         echo ""
+
+        if [[ "$TRIAGE_DEPTH" == "quick" ]]; then
+            log_info "Depth is quick; skipping debate"
+            update_tracking "status" "issues"
+            return 1
+        fi
 
         # Phase 2
         run_phase_2 "$target_dir" "$iteration"
@@ -563,6 +618,8 @@ OPTIONS:
     -t, --timeout MIN       Timeout per agent in minutes (default: 10)
     --writer NAME           Agent that wrote the change (default: claude)
     --reviewer NAME         Agent that reviews (default: Codex, then Grok)
+    --kind NAME             editorial, operational, decisional, spec, or code
+    --depth NAME            skip, quick, standard, or deep
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -575,6 +632,12 @@ PHASES:
     2. Writer rebuttal      Writer answers the reviewer's findings
     3. Reviewer response    Reviewer answers the rebuttal
     4. Synthesis            Writer implements agreed fixes
+
+TRIAGE:
+    Classified locally from paths, hunks, and decision language.
+    Kind:  editorial | operational | decisional | code
+    Depth: skip (no review) | quick (phase 1 only) | standard | deep
+    Decisional changes use the spec prompt and stay at standard or deep.
 
 CIRCUIT BREAKER:
     Prevents runaway loops by detecting:
@@ -592,6 +655,7 @@ REQUIREMENTS:
 EXAMPLES:
     ./adversarial_review.sh ../my-project
     ./adversarial_review.sh --writer claude --reviewer grok ../my-project
+    ./adversarial_review.sh --kind spec --reviewer grok ../my-project
     ./adversarial_review.sh -m 5 -v ../my-project
     ./adversarial_review.sh --dry-run ../my-project
     ./adversarial_review.sh --list-agents
@@ -657,6 +721,24 @@ main() {
                 REVIEWER="$2"
                 shift 2
                 ;;
+            --kind)
+                require_flag_arg "$1" "a kind" "${2:-}"
+                EXPLICIT_KIND=$(normalize_kind "$2")
+                if [[ -z "$EXPLICIT_KIND" ]]; then
+                    log_error "Unknown kind: $2 (known: editorial, operational, decisional, spec, code)"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --depth)
+                require_flag_arg "$1" "a depth" "${2:-}"
+                EXPLICIT_DEPTH=$(normalize_depth "$2")
+                if [[ -z "$EXPLICIT_DEPTH" ]]; then
+                    log_error "Unknown depth: $2 (known: skip, quick, standard, deep)"
+                    exit 1
+                fi
+                shift 2
+                ;;
             --dry-run)
                 DRY_RUN=1
                 shift
@@ -696,10 +778,25 @@ main() {
         exit 1
     fi
 
+    if ! triage_change "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" >/dev/null; then
+        log_error "Could not classify the change in $target_dir"
+        exit 1
+    fi
+    log_info "Triage: $TRIAGE_KIND / $TRIAGE_DEPTH"
+    log_verbose "Triage reason: $TRIAGE_REASON"
+
+    if [[ "$TRIAGE_DEPTH" == "skip" ]]; then
+        log_success "Depth is skip — no review"
+        init_tracking
+        update_tracking "target_dir" "$(cd "$target_dir" && pwd)"
+        update_tracking "status" "skipped"
+        exit 0
+    fi
+
     resolve_roles
 
     if [[ -n "$custom_prompt" ]] && [[ -f "$custom_prompt" ]]; then
-        cp "$custom_prompt" "$PROMPTS_DIR/initial_review.md"
+        PHASE1_PROMPT="$custom_prompt"
         log_info "Using custom prompt: $custom_prompt"
     fi
 

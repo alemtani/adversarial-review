@@ -24,10 +24,11 @@ brew install coreutils        # For timeout on macOS (gtimeout)
 **Current status:** Prototype complete, dry-run tested. Ready for real testing.
 
 **Next steps:**
-1. Test with actual Claude + Codex API calls
-2. Add bats tests following ralph's pattern
-3. Tune prompts based on real review results
-4. Add cost tracking
+1. Writer/reviewer roles (`--writer` / `--reviewer`); no self-review; default reviewer is Codex
+2. Diff-scoped review input (stop dumping the whole tree)
+3. Depth triage (skip / quick / standard / deep)
+4. Stop-hook installer (main-agent Stop only)
+5. Standalone `--apply` for optional synthesis edits
 
 ---
 
@@ -49,6 +50,11 @@ The main entry point (~820 lines). Orchestrates the 4-phase review loop:
 4. **Phase 4: Synthesis** - Claude synthesizes findings and implements fixes
 
 ### Library Components (`lib/`)
+
+- **agents.sh** - CLI adapters for Claude, Codex, and Grok:
+  - `run_agent <name>` dispatches to `run_claude` / `run_codex` / `run_grok`
+  - Review mode for Grok is read-only (`--tools read_file,grep,list_dir`)
+  - The 4-phase loop still calls Claude and Codex only
 
 - **circuit_breaker.sh** - Prevents runaway loops by detecting:
   - No progress after N iterations (default: 3)
@@ -148,11 +154,11 @@ Examples:
 
 ### Adding New Agents
 
-To add a third agent (e.g., Gemini):
-1. Add `run_gemini()` function following `run_claude()`/`run_codex()` pattern
-2. Update phases to run third agent in parallel
-3. Update cross-review to have 3-way comparisons
-4. Update synthesis to consider all three perspectives
+1. Add `run_<name>()` in `lib/agents.sh`
+2. Register the name in `KNOWN_AGENTS`, `agent_cli`, and `run_agent`
+3. Do not wire the new agent into the 4-phase loop until writer/reviewer roles exist
+
+Grok is already registered this way. The loop still uses Claude + Codex.
 
 ### Customizing Review Criteria
 

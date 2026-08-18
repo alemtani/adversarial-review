@@ -57,6 +57,9 @@ cd adversarial-review
 
 # Dry run (see what would happen)
 ./adversarial_review.sh --dry-run ../my-project
+
+# See which agent CLIs are installed
+./adversarial_review.sh --list-agents
 ```
 
 ## Requirements
@@ -65,6 +68,7 @@ cd adversarial-review
 - **codex CLI**: `npm install -g @openai/codex`
 - **jq**: `brew install jq` (macOS) or `apt install jq` (Linux)
 - **coreutils** (macOS only, for timeout): `brew install coreutils`
+- **grok CLI** (optional): registered in `lib/agents.sh` but not used in the review loop yet
 
 ## Usage
 
@@ -82,6 +86,7 @@ OPTIONS:
     --reset-circuit         Reset circuit breaker only
     --circuit-status        Show circuit breaker status
     --dry-run               Show what would happen without executing
+    --list-agents           Show which agent CLIs are installed
 ```
 
 ## Project Structure
@@ -90,6 +95,7 @@ OPTIONS:
 adversarial-review/
 ├── adversarial_review.sh    # Main script
 ├── lib/
+│   ├── agents.sh            # Claude / Codex / Grok CLI adapters
 │   ├── date_utils.sh        # Cross-platform date utilities
 │   ├── circuit_breaker.sh   # Prevents runaway loops
 │   └── response_analyzer.sh # Parses agent outputs

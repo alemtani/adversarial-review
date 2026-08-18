@@ -11,15 +11,16 @@ Turn this tool into a **writer + reviewer** stop hook.
 - Review **this turn’s diff**, not the whole tree
 - Full four-phase debate is rare
 
-The loop now has writer and reviewer roles. Input is still a source dump. That dump is the next slice. Do not grow the old two-reviewer loop. Replace it slice by slice.
+The loop now has writer and reviewer roles. Input is the uncommitted git diff and the changed files. Do not grow the old two-reviewer loop. Replace it slice by slice.
 
 ## Status
 
 - Slice 1 is on `main`: `lib/agents.sh` (`run_claude`, `run_codex`, `run_grok`, `run_agent`)
-- Slice 2: `--writer` / `--reviewer`. Phase 1 is reviewer-only. Writer rebuts in Phase 2.
+- Slice 2 is on `main`: `--writer` / `--reviewer`. Phase 1 is reviewer-only. Writer rebuts in Phase 2.
+- Slice 3: diff-scoped input. Phase 1 gets the git diff and changed files, not a tree dump.
 - Default writer: Claude. Default reviewer: Codex, then Grok. No self-review.
 
-Next: slice 3, branched from `main` after this merges.
+Next: slice 4, branched from `main` after this merges.
 
 ## Locked policy
 
@@ -59,8 +60,8 @@ Spec reviews use a spec prompt, not the code-review prompt. Status language: `re
 ## Slices (one PR each)
 
 1. **Agent registry + Grok runner** — on `main`
-2. **`--writer` / `--reviewer`** — this PR. Phase 1 is reviewer-only. Writer rebuts in Phase 2. Default reviewer: Codex, then Grok.
-3. **Diff-scoped input** — replace `collect_source_code` with the git diff + changed files
+2. **`--writer` / `--reviewer`** — on `main`. Phase 1 is reviewer-only. Writer rebuts in Phase 2. Default reviewer: Codex, then Grok.
+3. **Diff-scoped input** — this PR. Replace `collect_source_code` with the git diff + changed files
 4. **Depth triage + spec prompt** — skip/quick/standard/deep and editorial/operational/decisional
 5. **Stop-hook installer** — thin `hooks/stop.sh` for Claude, Grok, and Codex; state in the **target** repo (gitignored)
 6. **Standalone vs hook** — hook never applies; standalone `--apply` is explicit
@@ -76,8 +77,8 @@ When you do cite: one claim, one reason, one link. No research appendix.
 ## Next session
 
 ```
-Read AGENTS.md and docs/handoff.md. Implement slice 3 only: diff-scoped input.
-Replace collect_source_code with the git diff and changed files.
-Do not add the stop hook or depth triage.
+Read AGENTS.md and docs/handoff.md. Implement slice 4 only: depth triage + spec prompt.
+Skip/quick/standard/deep and editorial/operational/decisional.
+Do not add the stop hook.
 Open one PR. Keep the description short.
 ```

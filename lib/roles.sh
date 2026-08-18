@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Writer and reviewer roles.
 #
-# Default reviewer is Codex. If Codex is missing, use Grok.
+# Role defaults live in lib/agents.sh (DEFAULT_WRITER, DEFAULT_REVIEWER_ORDER).
 # The writer never reviews its own work.
-
-: "${DEFAULT_WRITER:=claude}"
 
 # Trim and lowercase an agent name.
 normalize_agent_name() {
@@ -12,25 +10,24 @@ normalize_agent_name() {
 }
 
 # Print the reviewer name, or return 1 if none is eligible.
+# Walks DEFAULT_REVIEWER_ORDER. Skips the writer and missing CLIs.
 # Args: writer [explicit_reviewer]
 resolve_reviewer() {
     local writer="$1"
     local explicit="${2:-}"
+    local candidate
 
     if [[ -n "$explicit" ]]; then
         printf '%s\n' "$explicit"
         return 0
     fi
 
-    if [[ "$writer" != "codex" ]] && agent_available codex; then
-        printf '%s\n' "codex"
-        return 0
-    fi
-
-    if [[ "$writer" != "grok" ]] && agent_available grok; then
-        printf '%s\n' "grok"
-        return 0
-    fi
+    for candidate in "${DEFAULT_REVIEWER_ORDER[@]}"; do
+        if [[ "$candidate" != "$writer" ]] && agent_available "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
 
     return 1
 }

@@ -84,6 +84,13 @@ fi
 
 assert_eq "$(resolve_reviewer claude grok)" "grok" "explicit reviewer wins"
 
+KNOWN_AGENTS+=(gemini)
+DEFAULT_REVIEWER_ORDER=(gemini codex grok)
+AVAILABLE=(claude gemini)
+assert_eq "$(resolve_reviewer claude)" "gemini" "reviewer order is the preference list"
+DEFAULT_REVIEWER_ORDER=(codex grok)
+# keep gemini in KNOWN_AGENTS so later unknown-name checks stay about "gpt"
+
 AVAILABLE=(claude codex)
 assert_ok "distinct available roles" validate_roles claude codex
 assert_fail "self-review rejected" validate_roles claude claude

@@ -5,25 +5,33 @@
 # This follows the provider-registry pattern used by LiteLLM and Ragas:
 # callers name an agent; this file translates that name into a CLI invocation.
 #
-# Known agents: claude, codex, grok
-# Modes: review (read-only where the CLI allows it), apply (may edit files)
+# Registry. To add a provider: append the name here and add run_<name>().
+# The CLI binary is the same as the name. Modes: review | apply.
 #
 # Grok review calls use --tools to restrict to read/search. That is least
 # privilege: a reviewer should not edit the tree. See Grok headless docs.
+
+KNOWN_AGENTS=(claude codex grok)
+: "${DEFAULT_WRITER:=claude}"
+DEFAULT_REVIEWER_ORDER=(codex grok)
 
 # Defaults if sourced outside the main script
 : "${DRY_RUN:=0}"
 : "${TIMEOUT_MINUTES:=10}"
 
-if ! declare -F log_claude >/dev/null 2>&1; then
-    log_claude()  { echo "[CLAUDE] $1"; }
-    log_codex()   { echo "[CODEX] $1"; }
-    log_grok()    { echo "[GROK] $1"; }
+if ! declare -F log_agent >/dev/null 2>&1; then
+    log_agent() {
+        local name="$1"
+        shift
+        local tag
+        tag=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
+        echo "[$tag] $*"
+    }
+fi
+if ! declare -F log_warning >/dev/null 2>&1; then
     log_warning() { echo "[WARNING] $1"; }
     log_error()   { echo "[ERROR] $1"; }
 fi
-
-KNOWN_AGENTS=(claude codex grok)
 
 is_known_agent() {
     local name="$1"
@@ -45,14 +53,10 @@ get_timeout_cmd() {
     fi
 }
 
-# Map agent name to CLI binary
+# Map agent name to CLI binary. The binary matches the registry name.
 agent_cli() {
-    case "$1" in
-        claude) echo "claude" ;;
-        codex)  echo "codex" ;;
-        grok)   echo "grok" ;;
-        *)      return 1 ;;
-    esac
+    is_known_agent "$1" || return 1
+    printf '%s\n' "$1"
 }
 
 agent_available() {
@@ -120,14 +124,25 @@ _run_timed_split() {
     return $exit_code
 }
 
+_agent_dry_run() {
+    local name="$1"
+    local prompt="$2"
+    local output_file="$3"
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        log_agent "$name" "[DRY RUN] Would run ${name} (${#prompt} chars) -> $output_file"
+        echo "DRY RUN: ${name} output" > "$output_file"
+        return 0
+    fi
+    return 1
+}
+
 _log_agent_result() {
-    local label="$1"
+    local name="$1"
     local exit_code="$2"
     local output_file="$3"
-    local name="${label#log_}"
 
     if [[ $exit_code -eq 0 ]]; then
-        "$label" "Complete ($(wc -l < "$output_file" | tr -d ' ') lines)"
+        log_agent "$name" "Complete ($(wc -l < "$output_file" | tr -d ' ') lines)"
     elif [[ $exit_code -eq 124 ]]; then
         log_warning "${name} timed out after ${TIMEOUT_MINUTES:-10}m"
     else
@@ -144,13 +159,9 @@ run_claude() {
     local working_dir="${3:-$PWD}"
     local mode="${4:-review}"
 
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        log_claude "[DRY RUN] Would run Claude (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Claude output" > "$output_file"
-        return 0
-    fi
+    _agent_dry_run claude "$prompt" "$output_file" && return 0
 
-    log_claude "Running..."
+    log_agent claude "Running..."
 
     local cmd_args=(--print)
     if _agent_is_apply_mode "$mode"; then
@@ -168,7 +179,7 @@ run_claude() {
         (cd "$working_dir" && echo "$prompt" | claude "${cmd_args[@]}") > "$output_file" 2>&1 || exit_code=$?
     fi
 
-    _log_agent_result log_claude "$exit_code" "$output_file"
+    _log_agent_result claude "$exit_code" "$output_file"
     return $exit_code
 }
 
@@ -181,19 +192,15 @@ run_codex() {
     local output_file="$2"
     local working_dir="${3:-$PWD}"
 
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        log_codex "[DRY RUN] Would run Codex (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Codex output" > "$output_file"
-        return 0
-    fi
+    _agent_dry_run codex "$prompt" "$output_file" && return 0
 
-    log_codex "Running..."
+    log_agent codex "Running..."
 
     local exit_code=0
     _run_timed_merged "$working_dir" "$output_file" \
         codex -q --full-auto --prompt "$prompt" || exit_code=$?
 
-    _log_agent_result log_codex "$exit_code" "$output_file"
+    _log_agent_result codex "$exit_code" "$output_file"
     return $exit_code
 }
 
@@ -230,13 +237,9 @@ run_grok() {
     local working_dir="${3:-$PWD}"
     local mode="${4:-review}"
 
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        log_grok "[DRY RUN] Would run Grok (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Grok output" > "$output_file"
-        return 0
-    fi
+    _agent_dry_run grok "$prompt" "$output_file" && return 0
 
-    log_grok "Running..."
+    log_agent grok "Running..."
 
     local prompt_file raw_json err_file
     prompt_file=$(mktemp)
@@ -265,23 +268,26 @@ run_grok() {
     _extract_grok_text "$raw_json" "$err_file" "$output_file"
     rm -f "$prompt_file" "$raw_json" "$err_file"
 
-    _log_agent_result log_grok "$exit_code" "$output_file"
+    _log_agent_result grok "$exit_code" "$output_file"
     return $exit_code
 }
 
-# Dispatch by agent name
+# Dispatch by agent name. Calls run_<name>.
 # Args: name prompt output_file [working_dir] [mode]
 run_agent() {
     local name="$1"
     shift
 
-    case "$name" in
-        claude) run_claude "$@" ;;
-        codex)  run_codex "$@" ;;
-        grok)   run_grok "$@" ;;
-        *)
-            log_error "Unknown agent: $name"
-            return 1
-            ;;
-    esac
+    if ! is_known_agent "$name"; then
+        log_error "Unknown agent: $name"
+        return 1
+    fi
+
+    local runner="run_${name}"
+    if ! declare -F "$runner" >/dev/null 2>&1; then
+        log_error "No runner for agent: $name (add ${runner}())"
+        return 1
+    fi
+
+    "$runner" "$@"
 }

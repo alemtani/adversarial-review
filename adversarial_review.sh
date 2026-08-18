@@ -20,8 +20,8 @@
 #   --reset                 Reset artifacts and tracking
 #   --reset-circuit         Reset circuit breaker
 #   --circuit-status        Show circuit breaker status
-#   --writer NAME           Agent that wrote the change (default: claude)
-#   --reviewer NAME         Agent that reviews (default: Codex, then Grok)
+#   --writer NAME           Agent that wrote the change (default: DEFAULT_WRITER)
+#   --reviewer NAME         Agent that reviews (DEFAULT_REVIEWER_ORDER)
 #   --dry-run               Show what would be done without executing
 #   --list-agents           Show which agent CLIs are installed
 
@@ -55,9 +55,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
-BOLD_CYAN='\033[1;36m'
 NC='\033[0m'
 
 # Logging
@@ -65,9 +63,13 @@ log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
-log_claude()  { echo -e "${MAGENTA}[CLAUDE]${NC} $1"; }
-log_codex()   { echo -e "${CYAN}[CODEX]${NC} $1"; }
-log_grok()    { echo -e "${BOLD_CYAN}[GROK]${NC} $1"; }
+log_agent() {
+    local name="$1"
+    shift
+    local tag
+    tag=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
+    echo -e "${CYAN}[${tag}]${NC} $*"
+}
 log_verbose() { [[ "$VERBOSE" == "1" ]] && echo -e "${BLUE}[VERBOSE]${NC} $1" || true; }
 
 source "$LIB_DIR/agents.sh"
@@ -588,7 +590,7 @@ reset_all() {
 }
 
 show_help() {
-    cat << 'EOF'
+    cat << EOF
 Adversarial Review: writer + reviewer loop
 
 USAGE:
@@ -600,8 +602,8 @@ OPTIONS:
     -p, --prompt FILE       Custom initial review prompt
     -v, --verbose           Verbose output
     -t, --timeout MIN       Timeout per agent in minutes (default: 10)
-    --writer NAME           Agent that wrote the change (default: claude)
-    --reviewer NAME         Agent that reviews (default: Codex, then Grok)
+    --writer NAME           Agent that wrote the change (default: ${DEFAULT_WRITER})
+    --reviewer NAME         Agent that reviews (default: ${DEFAULT_REVIEWER_ORDER[*]})
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -623,8 +625,8 @@ CIRCUIT BREAKER:
 
 REQUIREMENTS:
     - jq: brew install jq
-    - Writer and reviewer CLIs must be installed (claude, codex, or grok)
-    - Default writer: claude. Default reviewer: Codex, then Grok.
+    - Writer and reviewer CLIs must be installed (${KNOWN_AGENTS[*]})
+    - Default writer: ${DEFAULT_WRITER}. Default reviewer: ${DEFAULT_REVIEWER_ORDER[*]}.
     - coreutils (macOS): brew install coreutils (for timeout)
 
 EXAMPLES:

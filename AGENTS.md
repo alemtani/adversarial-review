@@ -33,7 +33,7 @@ Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `-
 
 ```
 adversarial_review.sh    # 4-phase loop
-lib/agents.sh            # run_claude / run_codex / run_grok / run_agent
+lib/agents.sh            # KNOWN_AGENTS + run_<name> adapters
 lib/roles.sh             # --writer / --reviewer resolution
 lib/circuit_breaker.sh
 lib/response_analyzer.sh
@@ -57,9 +57,9 @@ Artifacts: `iter{N}_{phase}_{agent}_{type}.md` under `artifacts/`.
 
 ## Adding an agent
 
-1. Add `run_<name>()` in `lib/agents.sh`
-2. Register it in `KNOWN_AGENTS`, `agent_cli`, and `run_agent`
-3. Select it with `--writer` or `--reviewer`. The writer cannot review itself.
+1. Append the name to `KNOWN_AGENTS` in `lib/agents.sh`
+2. Add `run_<name>()` in the same file (each CLI has its own flags)
+3. Optional: append the name to `DEFAULT_REVIEWER_ORDER` if it may be the default reviewer
 
 ## Bash notes
 

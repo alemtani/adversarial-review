@@ -19,10 +19,11 @@ The loop now has writer and reviewer roles. Input is the uncommitted git diff an
 - Slice 2 is on `main`: `--writer` / `--reviewer`. Phase 1 is reviewer-only. Writer rebuts in Phase 2.
 - Slice 3 is on `main`: diff-scoped input. Phase 1 gets the git diff and changed files, not a tree dump.
 - Slice 4 is on `main`: depth triage + spec prompt. Writer facts raise only. Reader returns counts, not a score.
-- Slice 5: stop-hook installer. Thin `hooks/stop.sh` for Claude, Grok, and Codex. State in the target repo (gitignored).
+- Slice 5 is on `main`: stop-hook installer. Thin `hooks/stop.sh` for Claude, Grok, and Codex. State in the target repo (gitignored).
+- Slice 6 is on `main`: standalone vs hook. Hook never applies. Standalone `--apply` is explicit.
 - Default writer: Claude. Default reviewer: Codex, then Grok. No self-review.
 
-Next: slice 6, branched from `main` after this merges.
+Planned slices are done.
 
 ## Locked policy
 
@@ -84,8 +85,8 @@ Spec reviews use a spec prompt, not the code-review prompt. Status language: `re
 2. **`--writer` / `--reviewer`** — on `main`. Phase 1 is reviewer-only. Writer rebuts in Phase 2. Default reviewer: Codex, then Grok.
 3. **Diff-scoped input** — on `main`. Replace `collect_source_code` with the git diff + changed files
 4. **Depth triage + spec prompt** — on `main`. skip/quick/standard/deep, writer facts (raise-only), reader counts
-5. **Stop-hook installer** — this PR. thin `hooks/stop.sh` for Claude, Grok, and Codex; state in the **target** repo (gitignored). Read the facts sidecar, run triage, call the reader, block on the counts.
-6. **Standalone vs hook** — hook never applies; standalone `--apply` is explicit
+5. **Stop-hook installer** — on `main`. thin `hooks/stop.sh` for Claude, Grok, and Codex; state in the **target** repo (gitignored). Read the facts sidecar, run triage, call the reader, block on the counts.
+6. **Standalone vs hook** — on `main`. hook never applies; standalone `--apply` is explicit
 
 ## Citation rule
 
@@ -97,8 +98,6 @@ When you do cite: one claim, one reason, one link. No research appendix.
 
 ## Next session
 
-```
-Read AGENTS.md and docs/handoff.md. Implement slice 6 only: standalone vs hook.
-Hook never applies. Standalone --apply is explicit.
-Open one PR. Keep the description short.
-```
+Planned slices are done. Do not add a third reviewer. Do not let the writer review itself.
+
+If you start a new slice, name the gap first. Do not reopen 1–6.

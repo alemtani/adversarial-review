@@ -1,6 +1,6 @@
 # Adversarial Review
 
-Multi-agent code review. A reviewer inspects the change. The writer rebuts. Then the writer implements agreed fixes.
+Multi-agent code review. A reviewer inspects the change. The writer rebuts. With `--apply`, the writer implements agreed fixes. The Stop hook never edits the tree.
 
 Based on patterns from [asimov-ralph](https://github.com/frankbria/ralph-claude-code) and research on [AI Debate](https://arxiv.org/abs/2410.04663).
 
@@ -26,7 +26,7 @@ A reviewer that is not the writer inspects the code. The writer then answers the
 │  Phase 3: Reviewer response                                 │
 │    Reviewer answers the rebuttal                            │
 ├─────────────────────────────────────────────────────────────┤
-│  Phase 4: Synthesis                                         │
+│  Phase 4: Synthesis (--apply only)                          │
 │    Writer implements high-confidence fixes                  │
 └─────────────────────────────────────────────────────────────┘
                             │
@@ -55,6 +55,9 @@ cd adversarial-review
 
 # Dry run (see what would happen)
 ./adversarial_review.sh --dry-run ../my-project
+
+# Standalone apply: writer implements agreed fixes
+./adversarial_review.sh --apply ../my-project
 
 # See which agent CLIs are installed
 ./adversarial_review.sh --list-agents
@@ -87,6 +90,7 @@ OPTIONS:
     --depth NAME            skip, quick, standard, or deep
     --facts FILE            Writer facts card (yes/no claims)
     --install-hook          Install the Stop hook into the target repo
+    --apply                 Standalone only. Writer implements agreed fixes
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -166,9 +170,11 @@ The change is classified locally (no model call) as editorial, operational, deci
 
 The writer may leave a yes/no card at `.adversarial-review/writer-facts.yml`. Those facts can raise depth. They cannot lower it. The reader returns counts, not a 1-10 score. Nits do not block.
 
+Standalone default is review only. Phase 4 runs only when you pass `--apply`.
+
 ### Stop hook
 
-`--install-hook` writes a Stop hook for Claude, Grok, and Codex. The hook reviews this turn's diff and blocks Stop on CRITICAL/HIGH (code) or decision issues (specs). It does not edit the tree. State lives in the target at `.adversarial-review/` and is gitignored.
+`--install-hook` writes a Stop hook for Claude, Grok, and Codex. The hook reviews this turn's diff and blocks Stop on CRITICAL/HIGH (code) or decision issues (specs). It does not edit the tree. `--apply` is standalone only; the hook rejects it. State lives in the target at `.adversarial-review/` and is gitignored.
 
 ### Agent Status Blocks
 
@@ -191,7 +197,7 @@ SUMMARY: Found critical type mixing bug
 
 The loop exits when:
 1. **The reviewer reports NO_ISSUES** in Phase 1
-2. **Synthesis completes** with EXIT_SIGNAL: true
+2. **Synthesis completes** with EXIT_SIGNAL: true (`--apply` only)
 3. **Max iterations reached**
 4. **Circuit breaker opens** (stagnation detected)
 
@@ -218,13 +224,15 @@ Key findings from research:
 
 ## Cost Considerations
 
-Each iteration makes 4 API calls:
+Without `--apply`, one pass is 3 API calls (review, rebuttal, response). Phase 4 does not run.
+
+With `--apply`, each iteration makes 4 API calls:
 - Phase 1: 1 call (reviewer)
 - Phase 2: 1 call (writer)
 - Phase 3: 1 call (reviewer)
 - Phase 4: 1 call (writer)
 
-With 3 iterations max, worst case is 12 API calls per review.
+With 3 iterations max, worst case is 12 API calls per `--apply` review.
 
 ## Contributing
 

@@ -217,6 +217,11 @@ SUMMARY: missing alternatives
 
 REVIEW_FIXTURE=""
 run_agent() {
+    local mode="${5:-review}"
+    if [[ "$mode" == "apply" || "$mode" == "true" ]]; then
+        printf 'APPLY_CALLED\n' > "$3"
+        return 1
+    fi
     printf '%s\n' "$REVIEW_FIXTURE" > "$3"
     return 0
 }
@@ -257,16 +262,23 @@ REVIEW_FIXTURE="$SPEC_BLOCK"
 out=$(run_stop_hook '{"hookEventName":"Stop","reason":"end_turn","cwd":"'"$spec"'"}' claude)
 assert_contains "$out" '"decision": "block"' "spec decision issues block Stop"
 
+apply_env=$(make_repo)
+CLEANUP+=("$apply_env")
+commit_file "$apply_env" "app.py" "print(1)"
+printf 'print(2)\n' > "$apply_env/app.py"
+REVIEW_FIXTURE="$HIGH_REVIEW"
+out=$(APPLY=1 run_stop_hook '{"hook_event_name":"Stop","reason":"end_turn","cwd":"'"$apply_env"'","session_id":"apply-env"}' claude)
+assert_contains "$out" '"decision": "block"' "hook ignores APPLY=1 and still blocks"
+assert_not_contains "$(cat "$apply_env/.adversarial-review/review.md")" "APPLY_CALLED" "hook reader stays in review mode"
+
 # --- CLI ------------------------------------------------------------------
 
 cli="$ROOT_DIR/adversarial_review.sh"
 
 out=$("$cli" --help)
 assert_contains "$out" "--install-hook" "help lists --install-hook"
-assert_not_contains "$out" "--apply" "help does not list --apply"
-
-out=$("$cli" --apply "$repo" 2>&1 || true)
-assert_contains "$out" "Unknown option" "CLI rejects --apply"
+assert_contains "$out" "--apply" "help lists --apply"
+assert_contains "$out" "Standalone only" "help says --apply is standalone"
 
 out=$("$cli" --install-hook "$repo" 2>&1)
 assert_contains "$out" "Installed Stop hook" "CLI --install-hook runs"

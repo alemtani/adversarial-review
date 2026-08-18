@@ -14,6 +14,8 @@
 # Defaults if sourced outside the main script
 : "${DRY_RUN:=0}"
 : "${TIMEOUT_MINUTES:=10}"
+: "${APPLY:=0}"
+: "${AR_HOOK:=0}"
 
 if ! declare -F log_claude >/dev/null 2>&1; then
     log_claude()  { echo "[CLAUDE] $1"; }
@@ -79,6 +81,29 @@ print_agent_status() {
 _agent_is_apply_mode() {
     local mode="${1:-review}"
     [[ "$mode" == "true" || "$mode" == "apply" ]]
+}
+
+# Print review or apply. Hook always review. APPLY=1 is standalone only.
+resolve_agent_mode() {
+    if [[ "${AR_HOOK:-0}" == "1" ]]; then
+        printf '%s\n' "review"
+        return 0
+    fi
+    if [[ "${APPLY:-0}" == "1" ]]; then
+        printf '%s\n' "apply"
+        return 0
+    fi
+    printf '%s\n' "review"
+}
+
+# Hook context must never edit the tree, even if a caller passes apply.
+_guard_hook_never_applies() {
+    local mode="${1:-review}"
+    if [[ "${AR_HOOK:-0}" == "1" ]] && _agent_is_apply_mode "$mode"; then
+        log_error "hook never applies"
+        return 1
+    fi
+    return 0
 }
 
 # Run a command with optional timeout. Merges stdout and stderr into output_file.
@@ -223,7 +248,7 @@ _extract_grok_text() {
 # Run Grok
 # Args: prompt output_file [working_dir] [mode]
 # review: read_file, grep, list_dir only; no subagents
-# apply:  --always-approve (needed later for optional --apply)
+# apply:  --always-approve (standalone --apply only)
 run_grok() {
     local prompt="$1"
     local output_file="$2"
@@ -274,6 +299,11 @@ run_grok() {
 run_agent() {
     local name="$1"
     shift
+    local mode="${4:-review}"
+
+    if ! _guard_hook_never_applies "$mode"; then
+        return 1
+    fi
 
     case "$name" in
         claude) run_claude "$@" ;;

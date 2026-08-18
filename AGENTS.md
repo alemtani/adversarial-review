@@ -16,13 +16,14 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 ./adversarial_review.sh ../some-project
 ./adversarial_review.sh --writer claude --reviewer grok ../project
 ./adversarial_review.sh --dry-run ../project
+./adversarial_review.sh --apply ../project
 ./adversarial_review.sh --install-hook ../project
 ./adversarial_review.sh --list-agents
 ./adversarial_review.sh --status
 ./adversarial_review.sh --reset
 ```
 
-Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`, `--install-hook`.
+Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`, `--apply`, `--install-hook`.
 
 ## Dependencies
 

@@ -26,6 +26,7 @@
 #   --depth NAME            skip, quick, standard, or deep
 #   --facts FILE            Writer facts card
 #   --install-hook          Install the Stop hook into the target repo
+#   --apply                 Standalone only. Writer implements agreed fixes.
 #   --dry-run               Show what would be done without executing
 #   --list-agents           Show which agent CLIs are installed
 
@@ -52,6 +53,7 @@ source "$LIB_DIR/response_analyzer.sh"
 MAX_ITERATIONS="${MAX_ITERATIONS:-3}"
 VERBOSE="${VERBOSE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+APPLY="${APPLY:-0}"
 TIMEOUT_MINUTES="${TIMEOUT_MINUTES:-10}"
 
 # Colors
@@ -388,7 +390,7 @@ Working directory: $target_dir
     local output_file
     output_file="$(phase4_synthesis_file "$iteration")"
 
-    run_agent "$WRITER" "$context" "$output_file" "$target_dir" "apply"
+    run_agent "$WRITER" "$context" "$output_file" "$target_dir" "$(resolve_agent_mode)"
 
     local status=$(parse_status_block "$output_file" "SYNTHESIS_STATUS")
     local exit_signal=$(echo "$status" | jq -r '.exit_signal // false')
@@ -431,6 +433,11 @@ run_review_loop() {
     log_verbose "Triage reason: $TRIAGE_REASON"
     log_info "Max iterations: $MAX_ITERATIONS"
     log_info "Timeout: ${TIMEOUT_MINUTES}m per agent"
+    if [[ "$(resolve_agent_mode)" == "apply" ]]; then
+        log_info "Apply: yes"
+    else
+        log_info "Apply: no (pass --apply to implement fixes)"
+    fi
     log_info "Agents:"
     print_agent_status | while read -r line; do
         log_info "  $line"
@@ -490,6 +497,13 @@ run_review_loop() {
         # Phase 3
         run_phase_3 "$target_dir" "$iteration"
         echo ""
+
+        # Phase 4 implements fixes. Standalone --apply only. Hook never applies.
+        if [[ "$(resolve_agent_mode)" != "apply" ]]; then
+            log_info "Review complete. Pass --apply to implement fixes."
+            update_tracking "status" "issues"
+            return 1
+        fi
 
         # Phase 4
         if run_phase_4 "$target_dir" "$iteration"; then
@@ -574,6 +588,7 @@ OPTIONS:
     --depth NAME            skip, quick, standard, or deep
     --facts FILE            Writer facts card (default: .adversarial-review/writer-facts.yml)
     --install-hook          Install the Stop hook into the target repo
+    --apply                 Standalone only. Writer implements agreed fixes
     --status                Show current status
     --reset                 Reset all state
     --reset-circuit         Reset circuit breaker only
@@ -585,7 +600,15 @@ PHASES:
     1. Review               Reviewer inspects the uncommitted git diff
     2. Writer rebuttal      Writer answers the reviewer's findings
     3. Reviewer response    Reviewer answers the rebuttal
-    4. Synthesis            Writer implements agreed fixes
+    4. Synthesis            Writer implements agreed fixes (--apply only)
+
+STANDALONE VS HOOK:
+    Standalone: you run this script on a repo.
+      Default: review and debate. Does not edit the target.
+      --apply: writer implements agreed fixes (phase 4).
+    Hook: fires on Stop in Claude, Grok, or Codex.
+      Always review only. Never applies. --apply is rejected.
+      Blocks Stop on CRITICAL/HIGH or decision issues.
 
 TRIAGE:
     Classified locally from paths, hunks, and decision language.
@@ -620,6 +643,7 @@ EXAMPLES:
     ./adversarial_review.sh --kind spec --reviewer grok ../my-project
     ./adversarial_review.sh -m 5 -v ../my-project
     ./adversarial_review.sh --dry-run ../my-project
+    ./adversarial_review.sh --apply ../my-project
     ./adversarial_review.sh --install-hook ../my-project
     ./adversarial_review.sh --list-agents
     ./adversarial_review.sh --status
@@ -711,6 +735,10 @@ main() {
                 INSTALL_HOOK=1
                 shift
                 ;;
+            --apply)
+                APPLY=1
+                shift
+                ;;
             --dry-run)
                 DRY_RUN=1
                 shift
@@ -744,6 +772,11 @@ main() {
     fi
 
     check_dependencies
+
+    if [[ "$INSTALL_HOOK" -eq 1 && "${APPLY:-0}" == "1" ]]; then
+        log_error "--apply is standalone only. The hook never applies."
+        exit 1
+    fi
 
     if [[ "$INSTALL_HOOK" -eq 1 ]]; then
         install_stop_hook "$target_dir"

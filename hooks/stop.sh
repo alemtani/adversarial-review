@@ -8,6 +8,8 @@ trap 'exit 0' ERR
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export AR_DIR="${AR_DIR:-$(cd "$HOOK_DIR/.." && pwd)}"
+export AR_HOOK=1
+unset APPLY
 
 _hook_emit() {
     printf '%s\n' "$1" >&2

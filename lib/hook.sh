@@ -245,7 +245,7 @@ $facts_note
 $review_input
 "
 
-    run_agent "$reviewer" "$full_prompt" "$out" "$target" "review"
+    run_agent "$reviewer" "$full_prompt" "$out" "$target" "$(resolve_agent_mode)"
 }
 
 hook_block_reason() {
@@ -293,6 +293,9 @@ run_stop_hook() {
     local writer_arg="${2:-}"
     local target writer reviewer state review_file status_file
     local status hash stored key diff
+
+    export AR_HOOK=1
+    unset APPLY
 
     if [[ -z "$payload" ]]; then
         payload='{}'

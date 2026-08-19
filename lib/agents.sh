@@ -16,6 +16,7 @@
 : "${TIMEOUT_MINUTES:=10}"
 : "${APPLY:=0}"
 : "${AR_HOOK:=0}"
+: "${AR_NO_TIMEOUT:=0}"
 
 if ! declare -F log_claude >/dev/null 2>&1; then
     log_claude()  { echo "[CLAUDE] $1"; }
@@ -45,6 +46,43 @@ get_timeout_cmd() {
     else
         echo ""
     fi
+}
+
+# Fail closed when no timeout command exists. A hung agent would never stop.
+# AR_NO_TIMEOUT=1 (--no-timeout) downgrades the error to a warning.
+require_timeout_cmd() {
+    if [[ -n "$(get_timeout_cmd)" ]]; then
+        return 0
+    fi
+    if [[ "${AR_NO_TIMEOUT:-0}" == "1" ]]; then
+        log_warning "No timeout command. Agents run uncapped (--no-timeout)."
+        return 0
+    fi
+    log_error "Missing dependency: timeout. A hung agent would run forever."
+    log_error "Install it: brew install coreutils (macOS) or apt install coreutils (Linux)."
+    log_error "To run uncapped anyway, pass --no-timeout."
+    return 1
+}
+
+# Dry-run stand-in. Includes a status block so a dry run does not look
+# like a crashed agent to the status parser.
+_write_dry_run_output() {
+    local name="$1"
+    local output_file="$2"
+    cat > "$output_file" << EOF
+DRY RUN: $name output
+
+---REVIEW_STATUS---
+ISSUES_FOUND: 0
+CRITICAL_COUNT: 0
+HIGH_COUNT: 0
+MEDIUM_COUNT: 0
+LOW_COUNT: 0
+CONFIDENCE: HIGH
+EXIT_SIGNAL: true
+SUMMARY: dry run, no agent was called
+---END_REVIEW_STATUS---
+EOF
 }
 
 # Map agent name to CLI binary
@@ -171,7 +209,7 @@ run_claude() {
 
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
         log_claude "[DRY RUN] Would run Claude (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Claude output" > "$output_file"
+        _write_dry_run_output "Claude" "$output_file"
         return 0
     fi
 
@@ -208,7 +246,7 @@ run_codex() {
 
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
         log_codex "[DRY RUN] Would run Codex (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Codex output" > "$output_file"
+        _write_dry_run_output "Codex" "$output_file"
         return 0
     fi
 
@@ -257,7 +295,7 @@ run_grok() {
 
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
         log_grok "[DRY RUN] Would run Grok (${#prompt} chars) -> $output_file"
-        echo "DRY RUN: Grok output" > "$output_file"
+        _write_dry_run_output "Grok" "$output_file"
         return 0
     fi
 

@@ -23,6 +23,9 @@ The loop now has writer and reviewer roles. Input is the uncommitted git diff an
 - Slice 6 is on `main`: standalone vs hook. Hook never applies. Standalone `--apply` is explicit.
 - Default writer: Claude. Default reviewer: Codex, then Grok. No self-review.
 
+- Slice 7 is on a branch: fail closed with no `timeout`, `--file` / `--files` input,
+  agent failure is its own exit code (3), documented exit codes.
+
 Planned slices are done.
 
 ## Locked policy
@@ -30,6 +33,9 @@ Planned slices are done.
 - **No self-review.** The writer does not review its own work.
 - **Default code reviewer:** Codex. If Codex is missing, use Grok.
 - **Specs:** may set reviewer to Grok (`--reviewer grok` or later `AR_SPEC_REVIEWER=grok`).
+- **A failed review never reads as clean.** No output, a truncated reply, or no
+  status block exits 3 and blocks Stop.
+- **No timeout command is a hard error.** `--no-timeout` is the only opt-out.
 - **Hook mode never edits the tree.** Findings go back to the writer (`decision: block`).
 - **`--apply` is opt-in** and standalone only.
 - **Stop hook:** main-agent `Stop` only. Ignore subagent stops. Ignore session-end Stop (`reason != end_turn`). Check `stopHookActive` so the same finding hash does not loop.

@@ -100,6 +100,15 @@ assert_eq "$(normalize_agent_name ' Claude ')" "claude" "normalize trims and low
 assert_ok "claude is known" is_known_agent claude
 assert_fail "unknown name is not known" is_known_agent gpt
 
+assert_contains() {
+    local haystack="$1" needle="$2" label="$3"
+    if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+        pass "$label"
+    else
+        fail "$label (missing '$needle')"
+    fi
+}
+
 # CLI rejects self-review and missing args before the loop starts
 cli="$ROOT_DIR/adversarial_review.sh"
 
@@ -130,6 +139,34 @@ if echo "$out" | grep -q "Unknown writer"; then
 else
     fail "CLI unknown writer error missing: $out"
 fi
+
+# A clean tree triages to skip. Role errors must still win: a broken
+# configuration is not a clean review.
+clean=$(mktemp -d)
+git -C "$clean" init -q
+git -C "$clean" config user.email "test@example.com"
+git -C "$clean" config user.name "Test"
+git -C "$clean" config commit.gpgsign false
+printf 'ok\n' > "$clean/README.md"
+git -C "$clean" add README.md
+git -C "$clean" commit -q -m init
+
+rc=0
+out=$("$cli" --writer grok --reviewer grok "$clean" 2>&1) || rc=$?
+assert_eq "$rc" "2" "self-review on a clean tree exits 2"
+assert_contains "$out" "no self-review" "self-review is named, not skipped"
+
+rc=0
+out=$("$cli" --writer definitely-not-an-agent "$clean" 2>&1) || rc=$?
+assert_eq "$rc" "2" "unknown writer on a clean tree exits 2"
+assert_contains "$out" "Unknown writer" "the unknown writer is named"
+
+rc=0
+out=$("$cli" --writer claude --reviewer grok "$clean" 2>&1) || rc=$?
+assert_eq "$rc" "0" "valid roles on a clean tree still skip"
+assert_contains "$out" "Depth is skip" "a clean tree still reports skip"
+
+rm -rf "$clean"
 
 if [[ $FAILS -gt 0 ]]; then
     echo "$FAILS failed"

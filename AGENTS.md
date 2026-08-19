@@ -16,6 +16,7 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 ./adversarial_review.sh ../some-project
 ./adversarial_review.sh --writer claude --reviewer grok ../project
 ./adversarial_review.sh --dry-run ../project
+./adversarial_review.sh ../project --files src/auth.py src/db/
 ./adversarial_review.sh --apply ../project
 ./adversarial_review.sh --install-hook ../project
 ./adversarial_review.sh --list-agents
@@ -23,12 +24,17 @@ Based on [asimov-ralph](https://github.com/frankbria/ralph-claude-code).
 ./adversarial_review.sh --reset
 ```
 
-Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`, `--apply`, `--install-hook`.
+Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `--reviewer`, `--kind`, `--depth`, `--facts`, `--file`, `--files`, `--no-timeout`, `--apply`, `--install-hook`.
+
+Roles are validated before triage. A bad agent name or a self-review exits 2 even on a clean tree.
+
+Exit codes: 0 clean, 1 issues, 2 usage or dependency error, 3 agent failure, 4 circuit breaker open.
 
 ## Dependencies
 
 - **jq**: `brew install jq`
-- **coreutils** (macOS): `brew install coreutils` (for `gtimeout`)
+- **coreutils** (macOS): `brew install coreutils` (for `gtimeout`). Required.
+  No timeout command is a hard error. `--no-timeout` runs uncapped.
 - Writer and reviewer CLIs: `claude`, `codex`, or `grok`. Default writer is Claude. Default reviewer is Codex, then Grok.
 
 ## Layout
@@ -37,7 +43,7 @@ Options: `-m` max iterations, `-v` verbose, `-t` timeout minutes, `--writer`, `-
 adversarial_review.sh    # 4-phase loop
 lib/agents.sh            # run_claude / run_codex / run_grok / run_agent
 lib/roles.sh             # --writer / --reviewer resolution
-lib/diff.sh              # git diff + changed files
+lib/diff.sh              # git diff + changed files; explicit paths
 lib/triage.sh            # skip/quick/standard/deep; editorial/operational/decisional
 lib/facts.sh             # writer facts (raise-only) and reader block counts
 lib/hook.sh              # Stop-hook runtime and installer
@@ -59,7 +65,9 @@ Do not add a third peer reviewer. The writer does not review its own work.
 3. **Reviewer response** — reviewer answers the rebuttal
 4. **Synthesis** — writer implements fixes
 
-Status blocks in agent output are parsed (`---REVIEW_STATUS---` …).
+Status blocks in agent output are parsed (`---REVIEW_STATUS---` …). No output,
+a truncated block, or no block is a failure, not a clean review. The loop exits
+3. The hook blocks Stop.
 
 Artifacts: `iter{N}_{phase}_{agent}_{type}.md` under `artifacts/`.
 

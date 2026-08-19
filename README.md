@@ -56,6 +56,10 @@ cd adversarial-review
 # Dry run (see what would happen)
 ./adversarial_review.sh --dry-run ../my-project
 
+# Review named files or directories instead of the diff
+./adversarial_review.sh ../my-project --files src/auth.py src/db/
+./adversarial_review.sh --file src/auth.py --file docs/design.md
+
 # Standalone apply: writer implements agreed fixes
 ./adversarial_review.sh --apply ../my-project
 
@@ -69,7 +73,10 @@ cd adversarial-review
 ## Requirements
 
 - **jq**: `brew install jq` (macOS) or `apt install jq` (Linux)
-- **coreutils** (macOS only, for timeout): `brew install coreutils`
+- **git**
+- **timeout** or **gtimeout**: `brew install coreutils` (macOS). Linux ships it.
+  Required. Without it a hung agent runs forever, so the tool stops with exit 2
+  before it calls an agent. `--no-timeout` runs uncapped and warns instead.
 - Writer and reviewer CLIs: `claude`, `codex`, or `grok`
 - Default writer: Claude. Default reviewer: Codex, then Grok. The writer cannot review itself.
 
@@ -89,6 +96,9 @@ OPTIONS:
     --kind NAME             editorial, operational, decisional, spec, or code
     --depth NAME            skip, quick, standard, or deep
     --facts FILE            Writer facts card (yes/no claims)
+    --file PATH             Review this file or directory (repeatable)
+    --files PATH...         Review these files or directories
+    --no-timeout            Run agents uncapped when no timeout command exists
     --install-hook          Install the Stop hook into the target repo
     --apply                 Standalone only. Writer implements agreed fixes
     --status                Show current status
@@ -158,9 +168,50 @@ Prevents runaway loops by detecting:
 ```bash
 MAX_ITERATIONS=5      # Override max iterations
 TIMEOUT_MINUTES=15    # Timeout per agent call
+AR_NO_TIMEOUT=1       # Same as --no-timeout
+AR_CONTENT_LINES=5000 # File content budget
 VERBOSE=1             # Enable verbose output
 DRY_RUN=1            # Show what would happen
 ```
+
+Roles are validated before triage. A typo'd agent name or a self-review exits
+2, even when the tree is clean and the review would have been skipped.
+
+## Exit Codes
+
+Wire these into CI.
+
+| Code | Meaning |
+|---|---|
+| 0 | Clean review, or nothing to review (depth `skip`, no changes) |
+| 1 | Issues found, or max iterations reached with issues open |
+| 2 | Usage or dependency error: bad flag, missing target, not a git repo, no `jq`, no `timeout` |
+| 3 | Agent failure: no output, a truncated reply, or no `REVIEW_STATUS` block |
+| 4 | Circuit breaker is open |
+
+Exit 3 is not a clean review. An agent that crashes or returns nothing never
+counts as zero issues. The run stops and says so.
+
+## Review Input
+
+Default: the uncommitted git diff of the target, plus the changed files. The
+whole diff is always included. File bodies stop at a 10000 line budget. The
+target must be a git work tree.
+
+`--file` / `--files`: review the named paths instead. Directories expand to
+their files. Git is not needed, and the tree does not have to be dirty. The
+same 10000 line budget applies, so a large directory cannot blow up the
+prompt. Triage runs on the whole files rather than on hunks. Named paths are
+never skipped by default; only `--depth skip` skips them.
+
+Relative paths resolve against the target directory first, then against the
+directory you ran from. The error names both bases when neither has the file.
+
+`--files` takes every path up to the next flag, so a target directory written
+after it is read as another path. Pass the target first
+(`./adversarial_review.sh ../proj --files a.py b.py`), or use `--file PATH`
+per path, which works in any order. With no target the paths resolve against
+the current directory.
 
 ## How It Works
 
@@ -173,6 +224,9 @@ The writer may leave a yes/no card at `.adversarial-review/writer-facts.yml`. Th
 Standalone default is review only. Phase 4 runs only when you pass `--apply`.
 
 ### Stop hook
+
+The hook relies on the host's own hook timeout (600s in the installed config),
+not on the `timeout` command, so it still runs where `timeout` is missing.
 
 `--install-hook` writes a Stop hook for Claude, Grok, and Codex. The hook reviews this turn's diff and blocks Stop on CRITICAL/HIGH (code) or decision issues (specs). It does not edit the tree. `--apply` is standalone only; the hook rejects it. State lives in the target at `.adversarial-review/` and is gitignored.
 
@@ -193,6 +247,10 @@ SUMMARY: Found critical type mixing bug
 ---END_REVIEW_STATUS---
 ```
 
+An agent that writes nothing, stops mid-block, or omits the status block
+failed. The run reports `REVIEW FAILED` and exits 3. In hook mode the same
+failure blocks Stop.
+
 ### Exit Conditions
 
 The loop exits when:
@@ -200,6 +258,7 @@ The loop exits when:
 2. **Synthesis completes** with EXIT_SIGNAL: true (`--apply` only)
 3. **Max iterations reached**
 4. **Circuit breaker opens** (stagnation detected)
+5. **An agent fails** (no usable review)
 
 ### Artifacts
 

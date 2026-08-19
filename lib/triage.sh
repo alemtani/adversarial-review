@@ -408,48 +408,78 @@ apply_writer_fact_raises() {
     RAISED_DEPTH="$depth"
 }
 
-# Classify the uncommitted change.
-# Args: target_dir [explicit_kind] [explicit_depth] [facts_file]
+# Where the change text comes from: diff (git) or paths (explicit files).
+_TRIAGE_SOURCE="diff"
+
+# Full path for one entry of the file list.
+# Diff entries are relative to dir. Path entries are already usable.
+_triage_file_path() {
+    if [[ "$_TRIAGE_SOURCE" == "paths" ]]; then
+        printf '%s' "$2"
+    else
+        printf '%s/%s' "$1" "$2"
+    fi
+}
+
+# Text to scan for decision language. Whole files in paths mode.
+_triage_added_text() {
+    local dir="$1" file="$2" path
+    if [[ "$_TRIAGE_SOURCE" == "paths" ]]; then
+        path=$(_triage_file_path "$dir" "$file")
+        [[ -f "$path" ]] && cat "$path"
+        return 0
+    fi
+    _file_added_text "$dir" "$file"
+}
+
+# Fill _STAT_* for an explicit file list. A whole file counts as added.
+_collect_path_stats() {
+    local files="$1"
+    local file path lines
+
+    _STAT_FILES=0
+    _STAT_ADDED=0
+    _STAT_DELETED=0
+    _STAT_REWRITE=0
+    _STAT_NEW_LARGE=0
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        _STAT_FILES=$((_STAT_FILES + 1))
+        path="$file"
+        [[ -f "$path" ]] || continue
+        lines=$(_file_line_count "$path")
+        [[ -n "$lines" ]] || lines=0
+        _STAT_ADDED=$((_STAT_ADDED + lines))
+        if [[ "$lines" -gt 50 ]]; then
+            _STAT_NEW_LARGE=1
+        fi
+    done <<< "$files"
+}
+
+# Classify a file list. Stats must already be collected.
+# Args: dir files explicit_kind explicit_depth facts_file whitespace_only
 # Prints: kind depth mode
-# Sets: TRIAGE_KIND TRIAGE_DEPTH TRIAGE_MODE TRIAGE_REASON
-triage_change() {
+_triage_classify() {
     local dir="$1"
+    local files="$2"
     local explicit_kind explicit_depth facts_file
-    local files file
+    local whitespace_only="${6:-0}"
+    local file path
     local has_code=0 has_doc=0 has_decisional_path=0 has_sensitive=0
     local has_decision_lang=0 docs_only=1
     local fm_kind="" fm_depth=""
     local computed_kind="" computed_depth=""
     local reasons=()
-    local whitespace_only=0
     local file_added=""
 
-    explicit_kind=$(normalize_kind "${2:-}")
-    explicit_depth=$(normalize_depth "${3:-}")
-    facts_file="${4:-}"
-
-    TRIAGE_KIND="code"
-    TRIAGE_DEPTH="skip"
-    TRIAGE_MODE="code"
-    TRIAGE_REASON="no changes"
-
-    if ! is_git_work_tree "$dir"; then
-        return 1
-    fi
-
-    files=$(list_changed_files "$dir")
-    if [[ -z "$files" ]]; then
-        _emit_triage
-        return 0
-    fi
-
-    _collect_change_stats "$dir"
-    if _is_whitespace_only "$dir"; then
-        whitespace_only=1
-    fi
+    explicit_kind=$(normalize_kind "${3:-}")
+    explicit_depth=$(normalize_depth "${4:-}")
+    facts_file="${5:-}"
 
     while IFS= read -r file; do
         [[ -n "$file" ]] || continue
+        path=$(_triage_file_path "$dir" "$file")
 
         if is_code_path "$file"; then
             has_code=1
@@ -465,8 +495,8 @@ triage_change() {
             has_sensitive=1
         fi
 
-        if [[ -f "$dir/$file" ]]; then
-            parse_frontmatter_file "$dir/$file"
+        if [[ -f "$path" ]]; then
+            parse_frontmatter_file "$path"
             if [[ -n "$_FM_KIND" ]]; then
                 local nk
                 nk=$(normalize_kind "$_FM_KIND")
@@ -486,7 +516,7 @@ triage_change() {
         fi
 
         if is_doc_path "$file"; then
-            file_added=$(_file_added_text "$dir" "$file")
+            file_added=$(_triage_added_text "$dir" "$file")
             if has_decision_language "$file_added"; then
                 has_decision_lang=1
             fi
@@ -595,6 +625,12 @@ triage_change() {
         reasons+=("frontmatter review")
     fi
 
+    # You named these paths. Review them. Only --depth can say skip.
+    if [[ "$_TRIAGE_SOURCE" == "paths" ]]; then
+        computed_depth=$(max_depth "$computed_depth" "quick")
+        reasons+=("explicit paths")
+    fi
+
     load_writer_facts "$dir" "$facts_file"
     if [[ "$WRITER_FACTS_PRESENT" -eq 1 ]]; then
         apply_writer_fact_raises "$computed_kind" "$computed_depth" "$has_code"
@@ -629,4 +665,65 @@ triage_change() {
     TRIAGE_REASON=$(IFS=', '; echo "${reasons[*]}")
 
     _emit_triage
+}
+
+# Classify the uncommitted change.
+# Args: target_dir [explicit_kind] [explicit_depth] [facts_file]
+# Prints: kind depth mode
+# Sets: TRIAGE_KIND TRIAGE_DEPTH TRIAGE_MODE TRIAGE_REASON
+triage_change() {
+    local dir="$1"
+    local files
+    local whitespace_only=0
+
+    TRIAGE_KIND="code"
+    TRIAGE_DEPTH="skip"
+    TRIAGE_MODE="code"
+    TRIAGE_REASON="no changes"
+    _TRIAGE_SOURCE="diff"
+
+    if ! is_git_work_tree "$dir"; then
+        return 1
+    fi
+
+    files=$(list_changed_files "$dir")
+    if [[ -z "$files" ]]; then
+        _emit_triage
+        return 0
+    fi
+
+    _collect_change_stats "$dir"
+    if _is_whitespace_only "$dir"; then
+        whitespace_only=1
+    fi
+
+    _triage_classify "$dir" "$files" "${2:-}" "${3:-}" "${4:-}" "$whitespace_only"
+}
+
+# Classify explicit files and directories. No git needed.
+# Args: base_dir explicit_kind explicit_depth facts_file path...
+# Prints: kind depth mode
+triage_paths() {
+    local dir="$1"
+    local explicit_kind="${2:-}"
+    local explicit_depth="${3:-}"
+    local facts_file="${4:-}"
+    shift 4
+    local files
+
+    TRIAGE_KIND="code"
+    TRIAGE_DEPTH="skip"
+    TRIAGE_MODE="code"
+    TRIAGE_REASON="no files"
+    _TRIAGE_SOURCE="paths"
+
+    files=$(expand_review_paths "$@") || return 1
+    if [[ -z "$files" ]]; then
+        _emit_triage
+        return 0
+    fi
+
+    _collect_path_stats "$files"
+
+    _triage_classify "$dir" "$files" "$explicit_kind" "$explicit_depth" "$facts_file" 0
 }

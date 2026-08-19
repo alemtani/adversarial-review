@@ -25,12 +25,29 @@
 #   --kind NAME             editorial, operational, decisional, spec, or code
 #   --depth NAME            skip, quick, standard, or deep
 #   --facts FILE            Writer facts card
+#   --file PATH             Review this path instead of the git diff (repeatable)
+#   --files PATH...         Review these paths instead of the git diff
+#   --no-timeout            Run agents uncapped when no timeout command exists
 #   --install-hook          Install the Stop hook into the target repo
 #   --apply                 Standalone only. Writer implements agreed fixes.
 #   --dry-run               Show what would be done without executing
 #   --list-agents           Show which agent CLIs are installed
+#
+# Exit codes:
+#   0  clean review, or nothing to review
+#   1  issues found (or max iterations reached with issues open)
+#   2  usage or dependency error
+#   3  agent failure: no usable review came back
+#   4  circuit breaker is open
 
 set -euo pipefail
+
+# Exit codes. Wire these into CI.
+EXIT_OK=0
+EXIT_ISSUES=1
+EXIT_USAGE=2
+EXIT_AGENT_FAILURE=3
+EXIT_CIRCUIT_OPEN=4
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,21 +111,39 @@ FACTS_FILE=""
 PHASE1_PROMPT=""
 INSTALL_HOOK=0
 
+# Explicit paths to review (--file / --files). Empty means review the diff.
+REVIEW_PATHS=()
+USE_PATHS=0
+
 # Check shared dependencies. Writer/reviewer CLIs are checked in validate_roles.
 check_dependencies() {
     if ! command -v jq &> /dev/null; then
         log_error "Missing dependency: jq (brew install jq)"
-        exit 1
+        exit $EXIT_USAGE
     fi
 
     if ! command -v git &> /dev/null; then
         log_error "Missing dependency: git"
-        exit 1
+        exit $EXIT_USAGE
     fi
+}
 
-    if [[ -z "$(get_timeout_cmd)" ]]; then
-        log_warning "No timeout command found. Install coreutils for timeout support."
-    fi
+# Print the paths passed with --file / --files.
+review_paths() {
+    printf '%s\n' "${REVIEW_PATHS[@]+"${REVIEW_PATHS[@]}"}"
+}
+
+# Loud, distinct failure. An agent that says nothing did not pass the review.
+report_agent_failure() {
+    local agent="$1" phase="$2" file="$3" status="$4"
+    log_error "=============================================="
+    log_error "REVIEW FAILED: $agent produced no usable output"
+    log_error "Phase: $phase"
+    log_error "Reason: $(status_error "$status")"
+    log_error "Artifact: $file"
+    log_error "This is not a clean review. Do not read it as 0 issues."
+    log_error "=============================================="
+    update_tracking "status" "review_failed"
 }
 
 require_flag_arg() {
@@ -117,7 +152,7 @@ require_flag_arg() {
     local val="${3:-}"
     if [[ -z "$val" || "$val" == -* ]]; then
         log_error "$opt requires $what"
-        exit 1
+        exit $EXIT_USAGE
     fi
 }
 
@@ -132,12 +167,22 @@ resolve_roles() {
     else
         if ! REVIEWER="$(resolve_reviewer "$WRITER")"; then
             log_error "No eligible reviewer. Install Codex or Grok, or pass --reviewer. Writer is $WRITER (no self-review)."
-            exit 1
+            exit $EXIT_USAGE
         fi
     fi
 
     if ! validate_roles "$WRITER" "$REVIEWER"; then
-        exit 1
+        exit $EXIT_USAGE
+    fi
+}
+
+# Print the phase-1 payload: explicit paths when given, else the git diff.
+collect_phase1_input() {
+    local target_dir="$1"
+    if [[ "$USE_PATHS" -eq 1 ]]; then
+        collect_paths_input "$target_dir" "${REVIEW_PATHS[@]}"
+    else
+        collect_review_input "$target_dir"
     fi
 }
 
@@ -222,10 +267,16 @@ run_phase_1() {
 
     log_info "=== Phase 1: Reviewer ($REVIEWER) ==="
 
-    log_verbose "Collecting git diff from $target_dir"
+    local input_header="DIFF AND CHANGED FILES TO REVIEW"
+    if [[ "$USE_PATHS" -eq 1 ]]; then
+        log_verbose "Collecting named paths under $target_dir"
+        input_header="FILES TO REVIEW"
+    else
+        log_verbose "Collecting git diff from $target_dir"
+    fi
     local review_input
-    if ! review_input=$(collect_review_input "$target_dir"); then
-        return 1
+    if ! review_input=$(collect_phase1_input "$target_dir"); then
+        return $EXIT_USAGE
     fi
 
     local prompt_file="$PROMPTS_DIR/initial_review.md"
@@ -248,41 +299,53 @@ $depth_note
 $facts_note
 
 ---
-# DIFF AND CHANGED FILES TO REVIEW
+# $input_header
 
 $review_input
 "
 
-    local reviewer_out
+    local reviewer_out agent_rc=0
     reviewer_out="$(phase1_review_file "$iteration")"
 
-    run_agent "$REVIEWER" "$full_prompt" "$reviewer_out" "$target_dir" "review"
+    run_agent "$REVIEWER" "$full_prompt" "$reviewer_out" "$target_dir" "review" || agent_rc=$?
 
     local reviewer_status reviewer_exit reviewer_issues reviewer_verdict
-    reviewer_status=$(parse_status_block "$reviewer_out" "REVIEW_STATUS")
-    reviewer_exit=$(echo "$reviewer_status" | jq -r '.exit_signal // false')
-    reviewer_verdict=$(echo "$reviewer_status" | jq -r '.verdict // empty' | tr '[:upper:]' '[:lower:]')
+    reviewer_status=$(parse_status_block "$reviewer_out" "REVIEW_STATUS") || true
+    [[ -n "$reviewer_status" ]] || reviewer_status='{"error": "no status block"}'
 
     add_to_history "$iteration" "phase_1" "$REVIEWER" "$reviewer_status"
+
+    # No output, a truncated block, or no block at all is a failure, not a pass.
+    if status_failed "$reviewer_status"; then
+        [[ $agent_rc -ne 0 ]] && log_error "$REVIEWER exited with code $agent_rc" || true
+        report_agent_failure "$REVIEWER" "phase 1" "$reviewer_out" "$reviewer_status"
+        return $EXIT_AGENT_FAILURE
+    fi
+    if [[ $agent_rc -ne 0 ]]; then
+        log_warning "$REVIEWER exited with code $agent_rc but returned a status block"
+    fi
+
+    reviewer_exit=$(echo "$reviewer_status" | jq -r '.exit_signal // false')
+    reviewer_verdict=$(echo "$reviewer_status" | jq -r '.verdict // empty' | tr '[:upper:]' '[:lower:]')
 
     if [[ "$TRIAGE_MODE" == "spec" && -n "$reviewer_verdict" ]]; then
         if review_should_block spec "$reviewer_status"; then
             log_info "Spec verdict: $reviewer_verdict"
-            return 1
+            return $EXIT_ISSUES
         fi
         log_success "Spec verdict: $reviewer_verdict"
-        return 0
+        return $EXIT_OK
     fi
 
     if [[ "$reviewer_exit" == "true" ]]; then
         log_success "Reviewer reports NO_ISSUES"
-        return 0
+        return $EXIT_OK
     fi
 
     reviewer_issues=$(echo "$reviewer_status" | jq -r '.issues_found // 0')
     log_info "$REVIEWER found: $reviewer_issues issues"
 
-    return 1
+    return $EXIT_ISSUES
 }
 
 # ============================================================================
@@ -315,10 +378,16 @@ $(cat "$reviewer_review")
 "
 
     writer_out="$(phase2_rebuttal_file "$iteration")"
-    run_agent "$WRITER" "$writer_prompt" "$writer_out" "$target_dir" "review"
+    run_agent "$WRITER" "$writer_prompt" "$writer_out" "$target_dir" "review" || true
 
-    writer_status=$(parse_status_block "$writer_out" "CROSS_REVIEW_STATUS")
+    writer_status=$(parse_status_block "$writer_out" "CROSS_REVIEW_STATUS") || true
+    [[ -n "$writer_status" ]] || writer_status='{"error": "no status block"}'
     add_to_history "$iteration" "phase_2" "$WRITER" "$writer_status"
+
+    if ! agent_output_ok "$writer_out"; then
+        report_agent_failure "$WRITER" "phase 2" "$writer_out" "$writer_status"
+        return $EXIT_AGENT_FAILURE
+    fi
 
     log_success "Writer rebuttal complete"
 }
@@ -347,10 +416,16 @@ $(cat "$writer_rebuttal")
 "
 
     reviewer_out="$(phase3_meta_file "$iteration")"
-    run_agent "$REVIEWER" "$reviewer_prompt" "$reviewer_out" "$target_dir" "review"
+    run_agent "$REVIEWER" "$reviewer_prompt" "$reviewer_out" "$target_dir" "review" || true
 
-    reviewer_status=$(parse_status_block "$reviewer_out" "META_REVIEW_STATUS")
+    reviewer_status=$(parse_status_block "$reviewer_out" "META_REVIEW_STATUS") || true
+    [[ -n "$reviewer_status" ]] || reviewer_status='{"error": "no status block"}'
     add_to_history "$iteration" "phase_3" "$REVIEWER" "$reviewer_status"
+
+    if ! agent_output_ok "$reviewer_out"; then
+        report_agent_failure "$REVIEWER" "phase 3" "$reviewer_out" "$reviewer_status"
+        return $EXIT_AGENT_FAILURE
+    fi
 
     log_success "Reviewer response complete"
 }
@@ -390,13 +465,21 @@ Working directory: $target_dir
     local output_file
     output_file="$(phase4_synthesis_file "$iteration")"
 
-    run_agent "$WRITER" "$context" "$output_file" "$target_dir" "$(resolve_agent_mode)"
+    run_agent "$WRITER" "$context" "$output_file" "$target_dir" "$(resolve_agent_mode)" || true
 
-    local status=$(parse_status_block "$output_file" "SYNTHESIS_STATUS")
-    local exit_signal=$(echo "$status" | jq -r '.exit_signal // false')
-    local files_modified=$(echo "$status" | jq -r '.files_modified // 0')
+    local status
+    status=$(parse_status_block "$output_file" "SYNTHESIS_STATUS") || true
+    [[ -n "$status" ]] || status='{"error": "no status block"}'
 
     add_to_history "$iteration" "phase_4" "$WRITER" "$status"
+
+    if ! agent_output_ok "$output_file"; then
+        report_agent_failure "$WRITER" "phase 4" "$output_file" "$status"
+        return $EXIT_AGENT_FAILURE
+    fi
+
+    local exit_signal=$(echo "$status" | jq -r '.exit_signal // false')
+    local files_modified=$(echo "$status" | jq -r '.files_modified // 0')
 
     # Record for circuit breaker
     local agents_agree=0
@@ -428,6 +511,14 @@ run_review_loop() {
     log_info "Target: $target_dir"
     log_info "Writer: $WRITER"
     log_info "Reviewer: $REVIEWER"
+    if [[ "$USE_PATHS" -eq 1 ]]; then
+        log_info "Input: named paths"
+        review_paths | while read -r p; do
+            log_info "  $p"
+        done
+    else
+        log_info "Input: uncommitted git diff"
+    fi
     log_info "Kind: $TRIAGE_KIND"
     log_info "Depth: $TRIAGE_DEPTH"
     log_verbose "Triage reason: $TRIAGE_REASON"
@@ -467,7 +558,7 @@ run_review_loop() {
             log_error "Circuit breaker is OPEN - halting"
             show_circuit_status
             update_tracking "status" "circuit_open"
-            return 1
+            return $EXIT_CIRCUIT_OPEN
         fi
 
         echo ""
@@ -476,40 +567,54 @@ run_review_loop() {
         log_info "=========================================="
         echo ""
 
-        # Phase 1
-        if run_phase_1 "$target_dir" "$iteration"; then
+        # Phase 1. An agent failure stops the run with its own exit code.
+        local phase_rc=0
+        run_phase_1 "$target_dir" "$iteration" || phase_rc=$?
+        if [[ $phase_rc -eq $EXIT_OK ]]; then
             log_success "Review complete"
             update_tracking "status" "clean"
-            return 0
+            return $EXIT_OK
+        fi
+        if [[ $phase_rc -ne $EXIT_ISSUES ]]; then
+            return $phase_rc
         fi
         echo ""
 
         if [[ "$TRIAGE_DEPTH" == "quick" ]]; then
             log_info "Depth is quick; skipping debate"
             update_tracking "status" "issues"
-            return 1
+            return $EXIT_ISSUES
         fi
 
         # Phase 2
-        run_phase_2 "$target_dir" "$iteration"
+        phase_rc=0
+        run_phase_2 "$target_dir" "$iteration" || phase_rc=$?
+        [[ $phase_rc -eq 0 ]] || return $phase_rc
         echo ""
 
         # Phase 3
-        run_phase_3 "$target_dir" "$iteration"
+        phase_rc=0
+        run_phase_3 "$target_dir" "$iteration" || phase_rc=$?
+        [[ $phase_rc -eq 0 ]] || return $phase_rc
         echo ""
 
         # Phase 4 implements fixes. Standalone --apply only. Hook never applies.
         if [[ "$(resolve_agent_mode)" != "apply" ]]; then
             log_info "Review complete. Pass --apply to implement fixes."
             update_tracking "status" "issues"
-            return 1
+            return $EXIT_ISSUES
         fi
 
         # Phase 4
-        if run_phase_4 "$target_dir" "$iteration"; then
+        phase_rc=0
+        run_phase_4 "$target_dir" "$iteration" || phase_rc=$?
+        if [[ $phase_rc -eq $EXIT_OK ]]; then
             log_success "Synthesis complete"
             update_tracking "status" "clean"
-            return 0
+            return $EXIT_OK
+        fi
+        if [[ $phase_rc -eq $EXIT_AGENT_FAILURE ]]; then
+            return $EXIT_AGENT_FAILURE
         fi
         echo ""
 
@@ -519,7 +624,7 @@ run_review_loop() {
 
     log_warning "Reached max iterations ($MAX_ITERATIONS)"
     update_tracking "status" "max_iterations"
-    return 1
+    return $EXIT_ISSUES
 }
 
 # ============================================================================
@@ -587,6 +692,9 @@ OPTIONS:
     --kind NAME             editorial, operational, decisional, spec, or code
     --depth NAME            skip, quick, standard, or deep
     --facts FILE            Writer facts card (default: .adversarial-review/writer-facts.yml)
+    --file PATH             Review this file or directory (repeatable)
+    --files PATH...         Review these files or directories
+    --no-timeout            Run agents uncapped when no timeout command exists
     --install-hook          Install the Stop hook into the target repo
     --apply                 Standalone only. Writer implements agreed fixes
     --status                Show current status
@@ -595,6 +703,23 @@ OPTIONS:
     --circuit-status        Show circuit breaker status
     --dry-run               Show what would happen without executing
     --list-agents           Show which agent CLIs are installed
+
+INPUT:
+    Default: the uncommitted git diff of the target, plus the changed files.
+    --file / --files: review the named paths instead. Directories expand to
+    their files. Git is not required. File bodies stop at a 10000 line budget.
+    Relative paths resolve against the target directory first, then against
+    the directory you ran from.
+    --files takes every path up to the next flag, so a target written after it
+    is read as another path. Pass the target first, or use --file PATH per
+    path, which works in any order.
+
+EXIT CODES:
+    0   clean review, or nothing to review
+    1   issues found, or max iterations reached with issues open
+    2   usage or dependency error (bad flag, no jq, no timeout command)
+    3   agent failure: no output, a truncated reply, or no status block
+    4   circuit breaker is open
 
 PHASES:
     1. Review               Reviewer inspects the uncommitted git diff
@@ -635,7 +760,8 @@ REQUIREMENTS:
     - git: the target must be a git work tree
     - Writer and reviewer CLIs must be installed (claude, codex, or grok)
     - Default writer: claude. Default reviewer: Codex, then Grok.
-    - coreutils (macOS): brew install coreutils (for timeout)
+    - timeout or gtimeout: brew install coreutils (macOS). Required.
+      Without it a hung agent never stops. --no-timeout runs uncapped.
 
 EXAMPLES:
     ./adversarial_review.sh ../my-project
@@ -644,6 +770,8 @@ EXAMPLES:
     ./adversarial_review.sh -m 5 -v ../my-project
     ./adversarial_review.sh --dry-run ../my-project
     ./adversarial_review.sh --apply ../my-project
+    ./adversarial_review.sh ../my-project --files src/auth.py src/db/
+    ./adversarial_review.sh --file src/auth.py --file docs/design.md
     ./adversarial_review.sh --install-hook ../my-project
     ./adversarial_review.sh --list-agents
     ./adversarial_review.sh --status
@@ -657,6 +785,7 @@ EOF
 main() {
     local target_dir=""
     local custom_prompt=""
+    local target_given=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -731,6 +860,25 @@ main() {
                 FACTS_FILE="$2"
                 shift 2
                 ;;
+            --file)
+                require_flag_arg "$1" "a path" "${2:-}"
+                REVIEW_PATHS+=("$2")
+                USE_PATHS=1
+                shift 2
+                ;;
+            --files)
+                require_flag_arg "$1" "at least one path" "${2:-}"
+                shift
+                while [[ $# -gt 0 && "$1" != -* ]]; do
+                    REVIEW_PATHS+=("$1")
+                    USE_PATHS=1
+                    shift
+                done
+                ;;
+            --no-timeout)
+                AR_NO_TIMEOUT=1
+                shift
+                ;;
             --install-hook)
                 INSTALL_HOOK=1
                 shift
@@ -750,32 +898,40 @@ main() {
             -*)
                 log_error "Unknown option: $1"
                 show_help
-                exit 1
+                exit $EXIT_USAGE
                 ;;
             *)
                 target_dir="$1"
+                target_given=1
                 shift
                 ;;
         esac
     done
 
+    # --files takes every path up to the next flag. Pass the target directory
+    # before it, or leave it out: named paths default the target to $PWD.
+    if [[ -z "$target_dir" && "$USE_PATHS" -eq 1 ]]; then
+        target_dir="$PWD"
+    fi
+
     if [[ -z "$target_dir" ]]; then
         log_error "No target directory specified"
         echo ""
         show_help
-        exit 1
+        exit $EXIT_USAGE
     fi
 
     if [[ ! -d "$target_dir" ]]; then
         log_error "Directory does not exist: $target_dir"
-        exit 1
+        exit $EXIT_USAGE
     fi
+    target_dir="$(cd "$target_dir" && pwd)"
 
     check_dependencies
 
     if [[ "$INSTALL_HOOK" -eq 1 && "${APPLY:-0}" == "1" ]]; then
         log_error "--apply is standalone only. The hook never applies."
-        exit 1
+        exit $EXIT_USAGE
     fi
 
     if [[ "$INSTALL_HOOK" -eq 1 ]]; then
@@ -783,14 +939,47 @@ main() {
         exit $?
     fi
 
-    if ! is_git_work_tree "$target_dir"; then
-        log_error "Target is not a git repository: $target_dir"
-        exit 1
+    # Named paths do not need git. The default input is the uncommitted diff.
+    # Named paths resolve against the target first, then the current directory.
+    if [[ "$USE_PATHS" -eq 1 ]]; then
+        local p resolved_path
+        local -a resolved=()
+        for p in "${REVIEW_PATHS[@]}"; do
+            if ! resolved_path=$(resolve_review_path "$target_dir" "$p"); then
+                log_error "Path does not exist: $p"
+                log_error "Tried: $(review_path_bases "$target_dir" "$p")"
+                if [[ "$target_given" -eq 0 ]]; then
+                    log_error "No target directory was given, so paths resolve against $PWD."
+                    log_error "--files takes every path up to the next flag. Pass the target"
+                    log_error "directory before --files, or use --file PATH for each path."
+                fi
+                exit $EXIT_USAGE
+            fi
+            resolved+=("$resolved_path")
+        done
+        REVIEW_PATHS=("${resolved[@]}")
+    else
+        if ! is_git_work_tree "$target_dir"; then
+            log_error "Target is not a git repository: $target_dir"
+            exit $EXIT_USAGE
+        fi
     fi
 
-    if ! triage_change "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" "$FACTS_FILE" >/dev/null; then
-        log_error "Could not classify the change in $target_dir"
-        exit 1
+    # Roles come before triage. A typo'd agent or a self-review must not exit
+    # clean because depth happened to be skip.
+    resolve_roles
+
+    if [[ "$USE_PATHS" -eq 1 ]]; then
+        if ! triage_paths "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" "$FACTS_FILE" \
+            "${REVIEW_PATHS[@]}" >/dev/null; then
+            log_error "Could not read the paths to review"
+            exit $EXIT_USAGE
+        fi
+    else
+        if ! triage_change "$target_dir" "$EXPLICIT_KIND" "$EXPLICIT_DEPTH" "$FACTS_FILE" >/dev/null; then
+            log_error "Could not classify the change in $target_dir"
+            exit $EXIT_USAGE
+        fi
     fi
     log_info "Triage: $TRIAGE_KIND / $TRIAGE_DEPTH"
     log_verbose "Triage reason: $TRIAGE_REASON"
@@ -798,19 +987,25 @@ main() {
     if [[ "$TRIAGE_DEPTH" == "skip" ]]; then
         log_success "Depth is skip — no review"
         init_tracking
-        update_tracking "target_dir" "$(cd "$target_dir" && pwd)"
+        update_tracking "target_dir" "$target_dir"
         update_tracking "status" "skipped"
-        exit 0
+        exit $EXIT_OK
     fi
 
-    resolve_roles
+    # Fail closed before any agent starts. Without a timeout a hung agent
+    # runs forever. --no-timeout is the opt-out.
+    if ! require_timeout_cmd; then
+        exit $EXIT_USAGE
+    fi
 
     if [[ -n "$custom_prompt" ]] && [[ -f "$custom_prompt" ]]; then
         PHASE1_PROMPT="$custom_prompt"
         log_info "Using custom prompt: $custom_prompt"
     fi
 
-    run_review_loop "$target_dir"
+    local rc=0
+    run_review_loop "$target_dir" || rc=$?
+    exit $rc
 }
 
 main "$@"
